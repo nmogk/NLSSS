@@ -4,7 +4,6 @@ from collections import deque
 from strenum import StrEnum
 from tqdm import tqdm
 import spatialite as sqlite3
-# import sqlite3
 import pickle
 import csv
 
@@ -20,7 +19,7 @@ csv_filename = 'output.csv'
 rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl'), ('ENVIRONMENT', 'envtype')])
 
 column_filename = 'column.pkl'
-database_filename = ':memory:' #'paleobiodb.sqlite'
+database_filename = 'paleobiodb.sqlite'
 api_base = 'https://paleobiodb.org/data1.2/'
 
 def taxon_field_picker(level):
@@ -105,9 +104,17 @@ def tableName(textname):
     return textname.replace(' ', '_').lower()
 
 # Connect to a SQLite database (which includes SpatiaLite)
-with sqlite3.connect(database_filename) as conn:
+with sqlite3.connect(':memory:') as conn:
+
+    # Attach the database from disk to memory. For a variety of setups, this will shave minutes off processing time
+    # Connect to the SQLite database on disk
+    conn_disk = sqlite3.connect(database_filename)
+    # Backup the data from disk to memory
+    conn_disk.backup(conn)
+    # Close the database connections
+    conn_disk.close()
     print('spatialite version: ' + conn.execute('SELECT spatialite_version()').fetchone()[0])
-    
+
     # Perform spatial queries using SpatiaLite functions
     cursor = conn.cursor()
     
@@ -140,18 +147,20 @@ with sqlite3.connect(database_filename) as conn:
         cursor.executemany(insert_query.format(tablename), (get_insert_values(occ) for occ in occs))
         conn.commit()
 
-    deleteQuery = (
-    'DELETE FROM {table1} ' +
-    'WHERE NOT EXISTS (' +
+    copyQuery = (
+    'CREATE TABLE IF NOT EXISTS {newtable} AS ' +
+    'SELECT * FROM {table1} ' +
+    'WHERE EXISTS (' +
         'SELECT 1 ' +
         'FROM {table2} ' +
         'WHERE {table1}.' + taxon_field + ' = {table2}.' + taxon_field +
         ' AND ST_Distance({table1}.location, {table2}.location) <= ' + str(threshold_distance_km) + ' * 1000)'
     )
 
-    deleteGlobalQuery = (
-    'DELETE FROM {table1} ' +
-    'WHERE NOT EXISTS (' +
+    copyGlobalQuery = (
+    'CREATE TABLE IF NOT EXISTS {newtable} AS ' +
+    'SELECT * FROM {table1} ' +
+    'WHERE EXISTS (' +
         'SELECT 1 ' +
         'FROM {table2} ' +
         'WHERE {table1}.' + taxon_field + ' = {table2}.' + taxon_field + ')'
@@ -159,21 +168,18 @@ with sqlite3.connect(database_filename) as conn:
 
     countQuery = 'SELECT COUNT(DISTINCT ' + taxon_field + ') FROM {}'
 
-    dropTableQuery = 'DROP TABLE IF EXISTS {}'
-
     id = 1
     result = {}
 
     print('Processing boundaries...')
     for below, above in tqdm(more_itertools.windowed(column, 2), total=114):
-        pass
         # Algorithm:
         # Count total unique species
         # Count unique species which globally cross boundary
         # Starting from bottom, proceding upwards:
-        #     Delete occurrences of species unique to lower unit
-        #     Delete occurrences in lower unit farther than threshold distance from occurrences of the same species in upper unit
-        #     Count remaining unique species
+        #     Create new table of occurrences of species which cross the boundary
+        #     Create new table of occurrences in lower unit which cross the boundary and are closer than threshold distance from occurrences of the same species in upper unit
+        #     Count remaining unique species globally and locally
         # Save results data
         # {id: {bdry_name:, total_species:, ngsss:, nlsss:}}
         # Export to csv
@@ -181,7 +187,7 @@ with sqlite3.connect(database_filename) as conn:
         uppertable = tableName(above[rv.NAME])
         res = {'boundary': '/'.join((below[rv.NAME], above[rv.NAME]))}
 
-        cursor.execute(countQuery.format(lowertable))
+        # Select result labels based on the selected taxon analysis level
         total_res_label = 'total_' + taxon_level
         label_temp = list('nlsss')
         label_temp[4] = taxon_level[0]
@@ -189,22 +195,23 @@ with sqlite3.connect(database_filename) as conn:
         label_temp[1] = 'g'
         global_label = ''.join(label_temp)
 
+        cursor.execute(countQuery.format(lowertable))
         res[total_res_label] = cursor.fetchone()[0]
 
         if count_global_crossings:
             # This query only deletes occurrences without any members that cross the boundary
             # Only needed if we want to count global crossings, since the distance query will also delete occurrences without any crossings
-            cursor.execute(deleteGlobalQuery.format(table1=lowertable, table2=uppertable))
+            cursor.execute(copyGlobalQuery.format(newtable=lowertable + '_globalcrossings', table1=lowertable, table2=uppertable))
             conn.commit()
 
-            cursor.execute(countQuery.format(lowertable))
+            cursor.execute(countQuery.format(lowertable + '_globalcrossings'))
             res[global_label] = cursor.fetchone()[0]
 
         # Delete occurrences of species unique to lower unit or without members above the boundary closer than the threshold distance.
-        cursor.execute(deleteQuery.format(table1=lowertable, table2=uppertable))
+        cursor.execute(copyQuery.format(newtable=lowertable + '_localcrossings', table1=lowertable, table2=uppertable))
         conn.commit()
 
-        cursor.execute(countQuery.format(lowertable))
+        cursor.execute(countQuery.format(lowertable + '_localcrossings'))
         res[local_label] = cursor.fetchone()[0]
 
         if id > 1:
@@ -213,11 +220,16 @@ with sqlite3.connect(database_filename) as conn:
             if count_global_crossings:
                 result[id-1][global_label + '_pct'] = 0 if denom == 0 else result[id-1][global_label]/denom
 
-        # Because we modified the data, delete the table so subsequent runs know to refresh from source
-        cursor.execute(dropTableQuery.format(lowertable))
-
         result[id] = res
         id += 1
+    
+    # Detach the in-memory database and save its changes to disk
+    # Connect to the SQLite database on disk
+    conn_disk = sqlite3.connect(database_filename)
+    # Backup the data from memory to disk
+    conn.backup(conn_disk)
+    # Close the database connections
+    conn_disk.close()
 
 def export_dict_of_dicts_to_csv(data, csv_filename):
     # Extract headers from the first dictionary
