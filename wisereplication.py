@@ -185,9 +185,9 @@ with sqlite3.connect(database_filename) as conn:
         total_res_label = 'total_' + taxon_level
         label_temp = list('nlsss')
         label_temp[4] = taxon_level[0]
-        local_label = str(label_temp)
+        local_label = ''.join(label_temp)
         label_temp[1] = 'g'
-        global_label = str(label_temp)
+        global_label = ''.join(label_temp)
 
         res[total_res_label] = cursor.fetchone()[0]
 
