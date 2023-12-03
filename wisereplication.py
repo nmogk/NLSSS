@@ -20,8 +20,18 @@ csv_filename = 'output.csv'
 rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl'), ('ENVIRONMENT', 'envtype')])
 
 column_filename = 'column.pkl'
-database_filename = 'paleobiodb.sqlite'
+database_filename = ':memory:' #'paleobiodb.sqlite'
 api_base = 'https://paleobiodb.org/data1.2/'
+
+def taxon_field_picker(level):
+    match level:
+        case 'species':
+            return rv.SPECIES
+        case 'genus':
+            return rv.GENUS
+        case 'family':
+            return rv.FAMILY
+taxon_field = taxon_field_picker(taxon_level)
 
 # Original Wise algorithm
 # Download files for all species in the lower and upper intervals of a boundary
@@ -135,7 +145,7 @@ with sqlite3.connect(database_filename) as conn:
     'WHERE NOT EXISTS (' +
         'SELECT 1 ' +
         'FROM {table2} ' +
-        'WHERE {table1}.' + rv.SPECIES + ' = {table2}.' + rv.SPECIES +
+        'WHERE {table1}.' + taxon_field + ' = {table2}.' + taxon_field +
         ' AND ST_Distance({table1}.location, {table2}.location) <= ' + str(threshold_distance_km) + ' * 1000)'
     )
 
@@ -144,10 +154,10 @@ with sqlite3.connect(database_filename) as conn:
     'WHERE NOT EXISTS (' +
         'SELECT 1 ' +
         'FROM {table2} ' +
-        'WHERE {table1}.' + rv.SPECIES + ' = {table2}.' + rv.SPECIES + ')'
+        'WHERE {table1}.' + taxon_field + ' = {table2}.' + taxon_field + ')'
     )
 
-    countQuery = 'SELECT COUNT(DISTINCT ' + rv.SPECIES + ') FROM {}'
+    countQuery = 'SELECT COUNT(DISTINCT ' + taxon_field + ') FROM {}'
 
     dropTableQuery = 'DROP TABLE IF EXISTS {}'
 
@@ -169,10 +179,17 @@ with sqlite3.connect(database_filename) as conn:
         # Export to csv
         lowertable = tableName(below[rv.NAME])
         uppertable = tableName(above[rv.NAME])
-        res = {'Boundary': '/'.join(below[rv.NAME], above[rv.NAME])}
+        res = {'boundary': '/'.join((below[rv.NAME], above[rv.NAME]))}
 
         cursor.execute(countQuery.format(lowertable))
-        res['total_species'] = cursor.fetchone()[0]
+        total_res_label = 'total_' + taxon_level
+        label_temp = list('nlsss')
+        label_temp[4] = taxon_level[0]
+        local_label = str(label_temp)
+        label_temp[1] = 'g'
+        global_label = str(label_temp)
+
+        res[total_res_label] = cursor.fetchone()[0]
 
         if count_global_crossings:
             # This query only deletes occurrences without any members that cross the boundary
@@ -181,20 +198,20 @@ with sqlite3.connect(database_filename) as conn:
             conn.commit()
 
             cursor.execute(countQuery.format(lowertable))
-            res['ngsss'] = cursor.fetchone()[0]
+            res[global_label] = cursor.fetchone()[0]
 
         # Delete occurrences of species unique to lower unit or without members above the boundary closer than the threshold distance.
         cursor.execute(deleteQuery.format(table1=lowertable, table2=uppertable))
         conn.commit()
 
         cursor.execute(countQuery.format(lowertable))
-        res['nlsss'] = cursor.fetchone()[0]
+        res[local_label] = cursor.fetchone()[0]
 
         if id > 1:
-            denom = result[id-1]['total_species'] + res['total_species']
-            result[id-1]['nlsss_pct'] = 0 if denom == 0 else result[id-1]['nlsss']/denom
+            denom = result[id-1][total_res_label] + res[total_res_label]
+            result[id-1][local_label + '_pct'] = 0 if denom == 0 else result[id-1][local_label]/denom
             if count_global_crossings:
-                result[id-1]['ngsss_pct'] = 0 if denom == 0 else result[id-1]['ngsss']/denom
+                result[id-1][global_label + '_pct'] = 0 if denom == 0 else result[id-1][global_label]/denom
 
         # Because we modified the data, delete the table so subsequent runs know to refresh from source
         cursor.execute(dropTableQuery.format(lowertable))
@@ -212,7 +229,7 @@ def export_dict_of_dicts_to_csv(data, csv_filename):
         writer.writeheader()
 
         for key, inner_dict in data.items():
-            row = {'key': key}
+            row = {'bdry_no': key}
             row.update(inner_dict)
             writer.writerow(row)
 
