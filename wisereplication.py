@@ -167,6 +167,7 @@ with sqlite3.connect(':memory:') as conn:
     )
 
     countQuery = 'SELECT COUNT(DISTINCT ' + taxon_field + ') FROM {}'
+    countUnion = '(SELECT ' + taxon_field + ' FROM {table1} UNION SELECT ' + taxon_field + ' FROM {table2})'
 
     id = 1
     result = {}
@@ -215,7 +216,9 @@ with sqlite3.connect(':memory:') as conn:
         res[local_label] = cursor.fetchone()[0]
 
         if id > 1:
-            denom = result[id-1][total_res_label] + res[total_res_label]
+            unionresult = countUnion.format(table1=lowertable, table2=uppertable)
+            cursor.execute(countQuery.format(unionresult))
+            denom = cursor.fetchone()[0]
             result[id-1][local_label + '_pct'] = 0 if denom == 0 else result[id-1][local_label]/denom
             if count_global_crossings:
                 result[id-1][global_label + '_pct'] = 0 if denom == 0 else result[id-1][global_label]/denom
@@ -244,6 +247,16 @@ def export_dict_of_dicts_to_csv(data, csv_filename):
             row = {'bdry_no': key}
             row.update(inner_dict)
             writer.writerow(row)
+
+dropTableQuery = 'DROP TABLE IF EXISTS {}'
+def clearProcessedBoundaries(local=True, glob=True):
+    with sqlite3.connect(database_filename) as conn:
+        cursor = conn.cursor()
+        if local:
+            (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_localcrossings')) for interval in column)
+        if glob:
+            (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_globalcrossings')) for interval in column)
+        conn.commit()
 
 # Export the dictionary of dictionaries to a CSV file
 export_dict_of_dicts_to_csv(result, csv_filename)
