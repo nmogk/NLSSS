@@ -3,21 +3,27 @@ import more_itertools
 from collections import deque
 from strenum import StrEnum
 from tqdm import tqdm
-# import spatialite as sqlite3
-import sqlite3
+import spatialite as sqlite3
+# import sqlite3
 import pickle
+import csv
 
 search_lvl = 5
-threshold_distance_km = 100
+threshold_distance_km = 220
 taxon_level = 'species' # species, genus, family
-env_type = None # None, terr, marine envtype
+env_type = None # None, terr, marine
+count_global_crossings = True
 
-rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl')])
+# Provide the filename for the CSV file
+csv_filename = 'output.csv'
+
+rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl'), ('ENVIRONMENT', 'envtype')])
 
 column_filename = 'column.pkl'
 database_filename = 'paleobiodb.sqlite'
 api_base = 'https://paleobiodb.org/data1.2/'
 
+# Original Wise algorithm
 # Download files for all species in the lower and upper intervals of a boundary
 # Delete all records identified less precicely than species level
 # Consider at the species level those identified to subspecies level
@@ -85,21 +91,20 @@ except FileNotFoundError as err:
     with open(column_filename, 'wb') as f:
         pickle.dump(column, f)
 
+def tableName(textname):
+    return textname.replace(' ', '_').lower()
+
 # Connect to a SQLite database (which includes SpatiaLite)
 with sqlite3.connect(database_filename) as conn:
-    # print(conn.execute('SELECT spatialite_version()').fetchone()[0])
-
-    # Enable the SpatiaLite extension
-    conn.enable_load_extension(True)
-    # conn.load_extension('mod_spatialite')
+    print('spatialite version: ' + conn.execute('SELECT spatialite_version()').fetchone()[0])
     
     # Perform spatial queries using SpatiaLite functions
     cursor = conn.cursor()
     
-    occurrence_request = 'occs/list.json?interval_id={}&pres=regular&show=acconly,class,coords,loc&idreso=' + taxon_level
+    occurrence_request = 'occs/list.json?interval_id={}&pres=regular&show=acconly,class,coords,loc&idreso=' + taxon_level + ('&' + rv.ENVIRONMENT + '=' + env_type if env_type is not None else '')
     check_table_query = 'SELECT 1 FROM sqlite_master WHERE type="table" AND name="{}"'
-    create_table_query = 'CREATE TABLE {}(' + ', '.join((rv.ID, rv.LAT, rv.LON, rv.PRECISION, rv.SPECIES, rv.GENUS, rv.FAMILY)) +  ')'
-    insert_query = 'INSERT INTO {} VALUES (?, ?, ?, ?, ?, ?, ?)'
+    create_table_query = 'CREATE TABLE {}(' + ', '.join((rv.ID, 'location', rv.PRECISION, rv.SPECIES, rv.GENUS, rv.FAMILY)) +  ')'
+    insert_query = 'INSERT INTO {} VALUES (?, MakePoint(? ,? ,4326), ?, ?, ?, ?)'
     
     def get_insert_values(occurrence):
         return (occurrence[rv.ID] , 
@@ -112,7 +117,7 @@ with sqlite3.connect(database_filename) as conn:
     
     print('Downloading fossil occurrence data...')
     for interval in tqdm(column):
-        tablename = interval[rv.NAME].replace(' ', '_')
+        tablename = tableName(interval[rv.NAME])
 
         cursor.execute(check_table_query.format(tablename))
         if cursor.fetchone() is not None:
@@ -125,38 +130,94 @@ with sqlite3.connect(database_filename) as conn:
         cursor.executemany(insert_query.format(tablename), (get_insert_values(occ) for occ in occs))
         conn.commit()
 
-print('Processing boundaries...')
-for below, above in tqdm(more_itertools.windowed(column, 2), total=114):
-    pass
-    # Algorithm:
-    # Count total unique species
-    # Count unique species which globally cross boundary
-    # Starting from bottom, proceding upwards:
-    #     Delete occurrences of species unique to lower unit
-    #     Delete occurrences in lower unit farther than threshold distance from occurrences of the same species in upper unit
-    #     Count remaining unique species
-    # Save results data
-    # {id: {bdry_name:, total_species:, ngsss:, nlsss:}}
-    # Export to csv
+    deleteQuery = (
+    'DELETE FROM {table1} ' +
+    'WHERE NOT EXISTS (' +
+        'SELECT 1 ' +
+        'FROM {table2} ' +
+        'WHERE {table1}.' + rv.SPECIES + ' = {table2}.' + rv.SPECIES +
+        ' AND ST_Distance({table1}.location, {table2}.location) <= ' + str(threshold_distance_km) + ' * 1000)'
+    )
 
-# query = f"""
-#     SELECT *
-#     FROM your_table
-#     WHERE ST_Distance(
-#         MakePoint({point_longitude}, {point_latitude}, 4326),
-#         geom_column
-#     ) <= {threshold_distance_km} * 1000
-# """
+    deleteGlobalQuery = (
+    'DELETE FROM {table1} ' +
+    'WHERE NOT EXISTS (' +
+        'SELECT 1 ' +
+        'FROM {table2} ' +
+        'WHERE {table1}.' + rv.SPECIES + ' = {table2}.' + rv.SPECIES + ')'
+    )
 
-# cursor.execute(query)
+    countQuery = 'SELECT COUNT(DISTINCT ' + rv.SPECIES + ') FROM {}'
 
-# result = cursor.fetchall()
+    dropTableQuery = 'DROP TABLE IF EXISTS {}'
 
-# for row in result:
-#     print(row)  # Handle nearby points
+    id = 1
+    result = {}
 
-# Close the connection
-# conn.close()
+    print('Processing boundaries...')
+    for below, above in tqdm(more_itertools.windowed(column, 2), total=114):
+        pass
+        # Algorithm:
+        # Count total unique species
+        # Count unique species which globally cross boundary
+        # Starting from bottom, proceding upwards:
+        #     Delete occurrences of species unique to lower unit
+        #     Delete occurrences in lower unit farther than threshold distance from occurrences of the same species in upper unit
+        #     Count remaining unique species
+        # Save results data
+        # {id: {bdry_name:, total_species:, ngsss:, nlsss:}}
+        # Export to csv
+        lowertable = tableName(below[rv.NAME])
+        uppertable = tableName(above[rv.NAME])
+        res = {'Boundary': '/'.join(below[rv.NAME], above[rv.NAME])}
 
+        cursor.execute(countQuery.format(lowertable))
+        res['total_species'] = cursor.fetchone()[0]
+
+        if count_global_crossings:
+            # This query only deletes occurrences without any members that cross the boundary
+            # Only needed if we want to count global crossings, since the distance query will also delete occurrences without any crossings
+            cursor.execute(deleteGlobalQuery.format(table1=lowertable, table2=uppertable))
+            conn.commit()
+
+            cursor.execute(countQuery.format(lowertable))
+            res['ngsss'] = cursor.fetchone()[0]
+
+        # Delete occurrences of species unique to lower unit or without members above the boundary closer than the threshold distance.
+        cursor.execute(deleteQuery.format(table1=lowertable, table2=uppertable))
+        conn.commit()
+
+        cursor.execute(countQuery.format(lowertable))
+        res['nlsss'] = cursor.fetchone()[0]
+
+        if id > 1:
+            denom = result[id-1]['total_species'] + res['total_species']
+            result[id-1]['nlsss_pct'] = 0 if denom == 0 else result[id-1]['nlsss']/denom
+            if count_global_crossings:
+                result[id-1]['ngsss_pct'] = 0 if denom == 0 else result[id-1]['ngsss']/denom
+
+        # Because we modified the data, delete the table so subsequent runs know to refresh from source
+        cursor.execute(dropTableQuery.format(lowertable))
+
+        result[id] = res
+        id += 1
+
+def export_dict_of_dicts_to_csv(data, csv_filename):
+    # Extract headers from the first dictionary
+    headers = list(data[next(iter(data))].keys())
+
+    with open(csv_filename, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=['bdry_no'] + headers)
+        
+        writer.writeheader()
+
+        for key, inner_dict in data.items():
+            row = {'key': key}
+            row.update(inner_dict)
+            writer.writerow(row)
+
+# Export the dictionary of dictionaries to a CSV file
+export_dict_of_dicts_to_csv(result, csv_filename)
+print(f'Results written to: {csv_filename}')
 # for line in column:
 #     print(line)
