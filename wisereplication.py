@@ -8,7 +8,7 @@ import pickle
 import csv
 
 search_lvl = 5
-threshold_distance_km = 220
+threshold_distance_deg = 2
 taxon_level = 'species' # species, genus, family
 env_type = None # None, terr, marine
 count_global_crossings = True
@@ -154,7 +154,7 @@ with sqlite3.connect(':memory:') as conn:
         'SELECT 1 ' +
         'FROM {table2} ' +
         'WHERE {table1}.' + taxon_field + ' = {table2}.' + taxon_field +
-        ' AND ST_Distance({table1}.location, {table2}.location) <= ' + str(threshold_distance_km) + ' * 1000)'
+        ' AND ST_Distance({table1}.location, {table2}.location) <= ' + str(threshold_distance_deg) + ' )'
     )
 
     copyGlobalQuery = (
