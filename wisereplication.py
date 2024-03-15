@@ -6,11 +6,14 @@ from tqdm import tqdm
 import spatialite as sqlite3
 import pickle
 import csv
-from sql_statements import *
-from paleobiodb_interface import *
+import sql_statements as sql
+import paleobiodb_interface as pbdb
+from paleobiodb_interface import rv
+from multiprocess import Manager
+import os
 
 # Settings for 
-search_lvl = 5
+search_lvl = 5 # How many levels deep to generate column names: 1-eon, 5-stage
 threshold_distance_deg = 2
 taxon_level = 'species' # species, genus, family
 env_type = None # None, terr, marine
@@ -34,8 +37,8 @@ def taxon_field_picker(level):
 taxon_field = taxon_field_picker(taxon_level)
 
 # Initialize queries from settings fields
-init_sql_statements(taxon_field, threshold_distance_deg)
-init_paleobiodb_queries(taxon_level, env_type, taxa_filt)
+sql.init_sql_statements(taxon_field, threshold_distance_deg)
+pbdb.init_paleobiodb_queries(taxon_level, env_type, taxa_filt)
 
 # Select result labels based on the selected taxon analysis level
 total_res_label = 'total_' + taxon_level
@@ -68,7 +71,7 @@ global_gap_label = ''.join(global_temp)
 
 def queryColumn():
     # Initial query to get highest level intervals
-    res = requests.get(api_base+interval_request.format(1))
+    res = requests.get(pbdb.api_base+pbdb.interval_request.format(1))
     seedData = res.json()
 
     # Load intervals into stack LIFO (oldest on top)
@@ -99,7 +102,7 @@ def queryColumn():
             t.update(1)
             continue
 
-        res = requests.get(api_base+interval_request.format(interval[rv.LEVEL] + 1)+column_parent_fragment.format(interval[rv.MIN_MA], interval[rv.MAX_MA]))
+        res = requests.get(pbdb.api_base+pbdb.interval_request.format(interval[rv.LEVEL] + 1)+pbdb.column_parent_fragment.format(interval[rv.MIN_MA], interval[rv.MAX_MA]))
         subintervals = res.json()
 
         if checkSubintervals(interval, subintervals['records']):
@@ -111,60 +114,52 @@ def queryColumn():
     t.close()
     return column
 
-print('Loading column information...')
-try:
-    with open(column_filename, 'rb') as f:
-        column = pickle.load(f)
-except FileNotFoundError as err:
-    column = queryColumn()
-    with open(column_filename, 'wb') as f:
-        pickle.dump(column, f)
-
 def tableName(textname):
     return textname.replace(' ', '_').lower()
 
-# Connect to a SQLite database (which includes SpatiaLite)
-with sqlite3.connect(':memory:') as conn:
+def retreive_paleobiodb_data(column):
+    # Connect to a SQLite database (which includes SpatiaLite)
+    with sqlite3.connect(':memory:') as conn:
 
-    # Attach the database from disk to memory. For a variety of setups, this will shave minutes off processing time
-    load_db_from_file(conn, database_filename)
-    print('spatialite version: ' + conn.execute(spatialite_query).fetchone()[0])
+        # Attach the database from disk to memory. For a variety of setups, this will shave minutes off processing time
+        sql.load_db_from_file(conn, database_filename)
+        print('spatialite version: ' + conn.execute(sql.spatialite_query).fetchone()[0])
 
-    # Perform spatial queries using SpatiaLite functions
-    cursor = conn.cursor()
-    
-    
-    def get_insert_values(occurrence):
-        return (occurrence[rv.ID] , 
-                  float(occurrence[rv.LAT]), 
-                  float(occurrence[rv.LON]), 
-                  occurrence[rv.PRECISION], 
-                  occurrence[rv.SPECIES], 
-                  occurrence[rv.GENUS], 
-                  occurrence[rv.FAMILY])
-    
-    print('Downloading fossil occurrence data...')
-    for interval in tqdm(column):
-        tablename = tableName(interval[rv.NAME])
+        # Perform spatial queries using SpatiaLite functions
+        cursor = conn.cursor()
 
-        cursor.execute(check_table_query.format(tablename))
-        if cursor.fetchone() is not None:
-            continue
-    
-        res = requests.get(api_base+occurrence_request.format(interval[rv.ID]))
-        occs = res.json()['records']
-        # Load result into database
-        cursor.execute(create_table_query.format(tablename))
-        cursor.executemany(insert_query.format(tablename), (get_insert_values(occ) for occ in occs))
-        conn.commit()
+        def get_insert_values(occurrence):
+            return (occurrence[rv.ID] , 
+                      float(occurrence[rv.LAT]), 
+                      float(occurrence[rv.LON]), 
+                      occurrence[rv.PRECISION], 
+                      occurrence[rv.SPECIES], 
+                      occurrence[rv.GENUS], 
+                      occurrence[rv.FAMILY])
 
-    save_db_to_file(conn, database_filename)
+        print('Downloading fossil occurrence data...')
+        for interval in tqdm(column):
+            tablename = tableName(interval[rv.NAME])
 
-    id = 1
-    result = {}
+            cursor.execute(sql.check_table_query.format(tablename))
+            if cursor.fetchone() is not None:
+                continue
+            
+            res = requests.get(pbdb.api_base+pbdb.occurrence_request.format(interval[rv.ID]))
+            occs = res.json()['records']
+            # Load result into database
+            cursor.execute(sql.create_table_query.format(tablename))
+            cursor.executemany(sql.insert_query.format(tablename), (get_insert_values(occ) for occ in occs))
+            conn.commit()
 
+        sql.save_db_to_file(conn, database_filename)
+
+def find_bounary_crossers(column):
     print('Processing boundaries...')
-    for below, above in tqdm(more_itertools.windowed(column, 2), total=len(column)-1):
+    manager = Manager()
+    result = manager.dict()
+    
+    def worker_tasks(id, window):
         # Algorithm:
         # Count total unique species
         # Count unique species which globally cross boundary
@@ -173,75 +168,95 @@ with sqlite3.connect(':memory:') as conn:
         #     Create new table of occurrences in lower unit which cross the boundary and are closer than threshold distance from occurrences of the same species in upper unit
         #     Count remaining unique species globally and locally
         # Save results data
-        # {id: {bdry_name:, total_species:, ngsss:, nlsss:}}
-        # Export to csv
-        lowertable = tableName(below[rv.NAME])
-        uppertable = tableName(above[rv.NAME])
-        res = {'boundary': '/'.join((below[rv.NAME], above[rv.NAME]))}
+        # {id: {boundary: (name), total_species:, ngsss:, nlsss:, ngsjs:, nlsjs:, ngsss_pct:, nlsss_pct:, ngsjs_pct:, nlsjs_pct:}}
 
+        below, above = window
+        with sqlite3.connect(':memory:') as conn:
+            # Perform spatial queries using SpatiaLite functions
+            cursor = conn.cursor()
 
+            lowertable = tableName(below[rv.NAME])
+            uppertable = tableName(above[rv.NAME])
+            res = {'boundary': '/'.join((below[rv.NAME], above[rv.NAME]))}
 
-        cursor.execute(countQuery.format(lowertable))
-        res[total_res_label] = cursor.fetchone()[0]
+            cursor.execute(sql.countQuery.format(lowertable))
+            res[total_res_label] = cursor.fetchone()[0]
 
-        if find_gappers:
-
-            cursor.executescript(create_union_view(lowertable+'_olderview', [tableName(age[rv.NAME]) for age in itertools.islice(column, 0, id)]))
-            conn.commit()
-            cursor.executescript(create_union_view(uppertable+'_youngerview', [tableName(age[rv.NAME]) for age in itertools.islice(column, id, None)]))
-            conn.commit()
-
-            cursor.execute(copyQuery.format(newtable=lowertable + '_localgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
-            conn.commit()
-
-            cursor.execute(countQuery.format(lowertable + '_localgappers'))
-            res[local_gap_label] = cursor.fetchone()[0]
-
-            if count_global_crossings:
-                cursor.execute(copyGlobalQuery.format(newtable=lowertable + '_globalgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
+            if find_gappers:
+                cursor.executescript(sql.create_union_view(lowertable+'_olderview', [tableName(age[rv.NAME]) for age in itertools.islice(column, 0, id)]))
+                conn.commit()
+                cursor.executescript(sql.create_union_view(uppertable+'_youngerview', [tableName(age[rv.NAME]) for age in itertools.islice(column, id, None)]))
                 conn.commit()
 
-                cursor.execute(countQuery.format(lowertable + '_globalgappers'))
-                res[global_gap_label] = cursor.fetchone()[0]
+                cursor.execute(sql.copyQuery.format(newtable=lowertable + '_localgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
+                conn.commit()
 
-        if count_global_crossings:
-            # This query only deletes occurrences without any members that cross the boundary
-            # Only needed if we want to count global crossings, since the distance query will also delete occurrences without any crossings
-            cursor.execute(copyGlobalQuery.format(newtable=lowertable + '_globalcrossings', table1=lowertable, table2=uppertable))
-            conn.commit()
-
-            cursor.execute(countQuery.format(lowertable + '_globalcrossings'))
-            res[global_label] = cursor.fetchone()[0]
-
-        # Delete occurrences of species unique to lower unit or without members above the boundary closer than the threshold distance.
-        cursor.execute(copyQuery.format(newtable=lowertable + '_localcrossings', table1=lowertable, table2=uppertable))
-        conn.commit()
-
-        cursor.execute(countQuery.format(lowertable + '_localcrossings'))
-        res[local_label] = cursor.fetchone()[0]
-
-        if id > 1:
-            unionresult = countUnion.format(table1=lowertable, table2=uppertable)
-            cursor.execute(countQuery.format(unionresult))
-            denom = cursor.fetchone()[0]
-            result[id-1][local_label + '_pct'] = 0 if denom == 0 else result[id-1][local_label]/denom
-            
-            if count_global_crossings:
-                result[id-1][global_label + '_pct'] = 0 if denom == 0 else result[id-1][global_label]/denom
-            
-            if find_gappers:
-                unionresult = countUnion.format(table1=lowertable + '_olderview', table2=uppertable + '_youngerview')
-                cursor.execute(countQuery.format(unionresult))
-                denom = cursor.fetchone()[0]
-                result[id-1][local_gap_label + '_pct'] = 0 if denom == 0 else result[id-1][local_gap_label]/denom
+                cursor.execute(sql.countQuery.format(lowertable + '_localgappers'))
+                res[local_gap_label] = cursor.fetchone()[0]
 
                 if count_global_crossings:
-                    result[id-1][global_gap_label + '_pct'] = 0 if denom == 0 else result[id-1][global_gap_label]/denom
+                    cursor.execute(sql.copyGlobalQuery.format(newtable=lowertable + '_globalgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
+                    conn.commit()
 
-        result[id] = res
-        id += 1
-    
-    save_db_to_file(conn, database_filename)
+                    cursor.execute(sql.countQuery.format(lowertable + '_globalgappers'))
+                    res[global_gap_label] = cursor.fetchone()[0]
+
+            if count_global_crossings:
+                # This query only deletes occurrences without any members that cross the boundary
+                # Only needed if we want to count global crossings, since the distance query will also delete occurrences without any crossings
+                cursor.execute(sql.copyGlobalQuery.format(newtable=lowertable + '_globalcrossings', table1=lowertable, table2=uppertable))
+                conn.commit()
+
+                cursor.execute(sql.countQuery.format(lowertable + '_globalcrossings'))
+                res[global_label] = cursor.fetchone()[0]
+
+            # Delete occurrences of species unique to lower unit or without members above the boundary closer than the threshold distance.
+            cursor.execute(sql.copyQuery.format(newtable=lowertable + '_localcrossings', table1=lowertable, table2=uppertable))
+            conn.commit()
+
+            cursor.execute(sql.countQuery.format(lowertable + '_localcrossings'))
+            res[local_label] = cursor.fetchone()[0]
+
+            result[id] = res
+
+    ppool = manager.pool(os.cpu_count() - 1)
+    with tqdm(total=len(column)-1) as pbar:
+        for _ in ppool.imap_unordered(worker_tasks, enumerate(more_itertools.windowed(column, 2), 1)):
+            pbar.update()
+
+    ppool.close()
+    ppool.join()
+
+    with sqlite3.connect(':memory:') as conn:
+        sql.save_db_to_file(conn, database_filename)
+
+    return result
+
+def overlap_statistics(column, result):
+    with sqlite3.connect(':memory:') as conn:
+        # Perform spatial queries using SpatiaLite functions
+        cursor = conn.cursor()
+
+        for id, (below, above) in tqdm(enumerate(more_itertools.windowed(column, 2)), total=len(column)-1):
+            lowertable = tableName(below[rv.NAME])
+            uppertable = tableName(above[rv.NAME])
+            if id > 0:
+                unionresult = sql.countUnion.format(table1=lowertable, table2=uppertable)
+                cursor.execute(sql.countQuery.format(unionresult))
+                denom = cursor.fetchone()[0]
+                result[id][local_label + '_pct'] = 0 if denom == 0 else result[id][local_label]/denom
+
+                if count_global_crossings:
+                    result[id][global_label + '_pct'] = 0 if denom == 0 else result[id][global_label]/denom
+
+                if find_gappers:
+                    unionresult = sql.countUnion.format(table1=lowertable + '_olderview', table2=uppertable + '_youngerview')
+                    cursor.execute(sql.countQuery.format(unionresult))
+                    denom = cursor.fetchone()[0]
+                    result[id][local_gap_label + '_pct'] = 0 if denom == 0 else result[id][local_gap_label]/denom
+
+                    if count_global_crossings:
+                        result[id][global_gap_label + '_pct'] = 0 if denom == 0 else result[id][global_gap_label]/denom
 
 def export_dict_of_dicts_to_csv(data, csv_filename):
     # Extract headers from the first dictionary
@@ -261,16 +276,29 @@ def clearProcessedBoundaries(local=True, glob=True, gappers=True):
     with sqlite3.connect(database_filename) as conn:
         cursor = conn.cursor()
         if local:
-            (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_localcrossings')) for interval in column)
+            (cursor.execute(sql.dropTableQuery.format(tableName(interval[rv.NAME])+'_localcrossings')) for interval in column)
         if glob:
-            (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_globalcrossings')) for interval in column)
+            (cursor.execute(sql.dropTableQuery.format(tableName(interval[rv.NAME])+'_globalcrossings')) for interval in column)
         if gappers:
-            (cursor.execute(dropViewQuery.format(tableName(interval[rv.NAME])+'_youngerview')) for interval in column)
-            (cursor.execute(dropViewQuery.format(tableName(interval[rv.NAME])+'_olderview')) for interval in column)
-            (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_localgappers')) for interval in column)
+            (cursor.execute(sql.dropViewQuery.format(tableName(interval[rv.NAME])+'_youngerview')) for interval in column)
+            (cursor.execute(sql.dropViewQuery.format(tableName(interval[rv.NAME])+'_olderview')) for interval in column)
+            (cursor.execute(sql.dropTableQuery.format(tableName(interval[rv.NAME])+'_localgappers')) for interval in column)
             if glob:
-                (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_globalgappers')) for interval in column)
+                (cursor.execute(sql.dropTableQuery.format(tableName(interval[rv.NAME])+'_globalgappers')) for interval in column)
         conn.commit()
+
+print('Loading column information...')
+try:
+    with open(column_filename, 'rb') as f:
+        column = pickle.load(f)
+except FileNotFoundError as err:
+    column = queryColumn()
+    with open(column_filename, 'wb') as f:
+        pickle.dump(column, f)
+
+retreive_paleobiodb_data(column) # Single process
+result = find_bounary_crossers(column) # Multiprocess
+overlap_statistics(column, result) # Single process
 
 # Export the dictionary of dictionaries to a CSV file
 export_dict_of_dicts_to_csv(result, csv_filename)

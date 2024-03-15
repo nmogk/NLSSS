@@ -13,7 +13,7 @@ rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag')
 interval_request = 'intervals/list.json?scale=1&level={}'
 column_parent_fragment = '&min_ma={}&max_ma={}'
 
-occurrence_request
+occurrence_request = ''
 
 def init_paleobiodb_queries(taxon_level, env_type=None, taxa_filt=None):
     global occurrence_request

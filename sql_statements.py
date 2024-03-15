@@ -24,7 +24,7 @@ def create_union_view(view_name, table_names):
     return query
 
 # These queries need initialization
-copyQuery, copyGlobalQuery, countQuery, countUnion
+copyQuery = copyGlobalQuery = countQuery = countUnion = ''
 
 def init_sql_statements(taxon_field, threshold_distance_deg):
     '''Initialize statements which require static setting information (specifically, taxon level and spatial search distance) as part of the query'''
