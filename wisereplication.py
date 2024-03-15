@@ -1,5 +1,6 @@
 import requests
 import more_itertools
+import itertools
 from collections import deque
 from strenum import StrEnum
 from tqdm import tqdm
@@ -132,7 +133,7 @@ with sqlite3.connect(':memory:') as conn:
     occurrence_request = ('occs/list.json?interval_id={}&pres=regular&show=acconly,class,coords,loc&idreso=' + taxon_level + 
             ('&' + rv.ENVIRONMENT + '=' + env_type if env_type is not None else '') + 
             ('&' + rv.FILTER_TAXA + '=' + taxa_filt if taxa_filt is not None else ''))
-    check_table_query = 'SELECT 1 FROM sqlite_master WHERE type="table" AND name="{}"'
+    check_table_query = 'SELECT 1 FROM sqlite_schema WHERE type="table" AND name="{}"'
     create_table_query = 'CREATE TABLE {}(' + ', '.join((rv.ID, 'location', rv.PRECISION, rv.SPECIES, rv.GENUS, rv.FAMILY)) +  ')'
     insert_query = 'INSERT INTO {} VALUES (?, MakePoint(? ,? ,4326), ?, ?, ?, ?)'
     
@@ -159,6 +160,14 @@ with sqlite3.connect(':memory:') as conn:
         cursor.execute(create_table_query.format(tablename))
         cursor.executemany(insert_query.format(tablename), (get_insert_values(occ) for occ in occs))
         conn.commit()
+
+    # Save in-memory database to disk
+    # Connect to the SQLite database on disk
+    conn_disk = sqlite3.connect(database_filename)
+    # Backup the data from memory to disk
+    conn.backup(conn_disk)
+    # Close the database connections
+    conn_disk.close()
 
     copyQuery = (
     'CREATE TABLE IF NOT EXISTS {newtable} AS ' +
@@ -217,9 +226,9 @@ with sqlite3.connect(':memory:') as conn:
             label_temp[-2] = 'j' # j for "Jumping"
             local_gap_label = ''.join(label_temp)
 
-            cursor.executescript(create_union_view(lowertable+'_olderview', [tableName(age) for age in column[0:id]]))
+            cursor.executescript(create_union_view(lowertable+'_olderview', [tableName(age[rv.NAME]) for age in itertools.islice(column, 0, id)]))
             conn.commit()
-            cursor.executescript(create_union_view(uppertable+'_youngerview', [tableName(age) for age in column[id:]]))
+            cursor.executescript(create_union_view(uppertable+'_youngerview', [tableName(age[rv.NAME]) for age in itertools.islice(column, id, None)]))
             conn.commit()
 
             cursor.execute(copyQuery.format(newtable=lowertable + '_localgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
