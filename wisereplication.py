@@ -2,12 +2,14 @@ import requests
 import more_itertools
 import itertools
 from collections import deque
-from strenum import StrEnum
 from tqdm import tqdm
 import spatialite as sqlite3
 import pickle
 import csv
+from sql_statements import *
+from paleobiodb_interface import *
 
+# Settings for 
 search_lvl = 5
 threshold_distance_deg = 2
 taxon_level = 'species' # species, genus, family
@@ -19,21 +21,39 @@ find_gappers = True # Include taxa which straddle a boundary with any number of 
 # Provide the filename for the CSV file
 csv_filename = 'output.csv'
 
-rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl'), ('ENVIRONMENT', 'envtype'), ('FILTER_TAXA', 'base_name')])
-
 column_filename = 'column.pkl'
 database_filename = 'paleobiodb.sqlite'
-api_base = 'https://paleobiodb.org/data1.2/'
 
 def taxon_field_picker(level):
-    match level:
-        case 'species':
-            return rv.SPECIES
-        case 'genus':
-            return rv.GENUS
-        case 'family':
-            return rv.FAMILY
+    if level=='species':
+        return rv.SPECIES
+    if level=='genus':
+        return rv.GENUS
+    if level=='family':
+        return rv.FAMILY
 taxon_field = taxon_field_picker(taxon_level)
+
+# Initialize queries from settings fields
+init_sql_statements(taxon_field, threshold_distance_deg)
+init_paleobiodb_queries(taxon_level, env_type, taxa_filt)
+
+# Select result labels based on the selected taxon analysis level
+total_res_label = 'total_' + taxon_level
+label_temp = list('nlsss')
+label_temp[2] = list('orpes')[search_lvl-1] # eOnotherm, eRathem, Period (system), Epoch (series), Stage
+label_temp[4] = taxon_level[0]
+
+global_temp = label_temp.copy()
+global_temp[1] = 'g'
+
+local_label = ''.join(label_temp)
+global_label = ''.join(global_temp)
+
+label_temp[-2] = 'j' # j for "Jumping"
+local_gap_label = ''.join(label_temp)
+global_temp[-2] = 'j'
+global_gap_label = ''.join(global_temp)
+
 
 # Original Wise algorithm
 # Download files for all species in the lower and upper intervals of a boundary
@@ -47,9 +67,6 @@ taxon_field = taxon_field_picker(taxon_level)
 # Count species
 
 def queryColumn():
-    interval_request = 'intervals/list.json?scale=1&level={}'
-    parent_fragment = '&min_ma={}&max_ma={}'
-
     # Initial query to get highest level intervals
     res = requests.get(api_base+interval_request.format(1))
     seedData = res.json()
@@ -82,7 +99,7 @@ def queryColumn():
             t.update(1)
             continue
 
-        res = requests.get(api_base+interval_request.format(interval[rv.LEVEL] + 1)+parent_fragment.format(interval[rv.MIN_MA], interval[rv.MAX_MA]))
+        res = requests.get(api_base+interval_request.format(interval[rv.LEVEL] + 1)+column_parent_fragment.format(interval[rv.MIN_MA], interval[rv.MAX_MA]))
         subintervals = res.json()
 
         if checkSubintervals(interval, subintervals['records']):
@@ -106,36 +123,16 @@ except FileNotFoundError as err:
 def tableName(textname):
     return textname.replace(' ', '_').lower()
 
-def create_union_view(view_name, table_names):
-    query = f"DROP VIEW IF EXISTS {view_name};\n"  # Drop view if it exists
-    query += f"CREATE VIEW {view_name} AS\n"
-    for i, table_name in enumerate(table_names):
-        if i > 0:
-            query += "UNION ALL\n"
-        query += f"SELECT * FROM {table_name}\n"
-    return query
-
 # Connect to a SQLite database (which includes SpatiaLite)
 with sqlite3.connect(':memory:') as conn:
 
     # Attach the database from disk to memory. For a variety of setups, this will shave minutes off processing time
-    # Connect to the SQLite database on disk
-    conn_disk = sqlite3.connect(database_filename)
-    # Backup the data from disk to memory
-    conn_disk.backup(conn)
-    # Close the database connections
-    conn_disk.close()
-    print('spatialite version: ' + conn.execute('SELECT spatialite_version()').fetchone()[0])
+    load_db_from_file(conn, database_filename)
+    print('spatialite version: ' + conn.execute(spatialite_query).fetchone()[0])
 
     # Perform spatial queries using SpatiaLite functions
     cursor = conn.cursor()
     
-    occurrence_request = ('occs/list.json?interval_id={}&pres=regular&show=acconly,class,coords,loc&idreso=' + taxon_level + 
-            ('&' + rv.ENVIRONMENT + '=' + env_type if env_type is not None else '') + 
-            ('&' + rv.FILTER_TAXA + '=' + taxa_filt if taxa_filt is not None else ''))
-    check_table_query = 'SELECT 1 FROM sqlite_schema WHERE type="table" AND name="{}"'
-    create_table_query = 'CREATE TABLE {}(' + ', '.join((rv.ID, 'location', rv.PRECISION, rv.SPECIES, rv.GENUS, rv.FAMILY)) +  ')'
-    insert_query = 'INSERT INTO {} VALUES (?, MakePoint(? ,? ,4326), ?, ?, ?, ?)'
     
     def get_insert_values(occurrence):
         return (occurrence[rv.ID] , 
@@ -161,35 +158,7 @@ with sqlite3.connect(':memory:') as conn:
         cursor.executemany(insert_query.format(tablename), (get_insert_values(occ) for occ in occs))
         conn.commit()
 
-    # Save in-memory database to disk
-    # Connect to the SQLite database on disk
-    conn_disk = sqlite3.connect(database_filename)
-    # Backup the data from memory to disk
-    conn.backup(conn_disk)
-    # Close the database connections
-    conn_disk.close()
-
-    copyQuery = (
-    'CREATE TABLE IF NOT EXISTS {newtable} AS ' +
-    'SELECT * FROM {table1} ' +
-    'WHERE EXISTS (' +
-        'SELECT 1 ' +
-        'FROM {table2} ' +
-        'WHERE {table1}.' + taxon_field + ' = {table2}.' + taxon_field +
-        ' AND ST_Distance({table1}.location, {table2}.location) <= ' + str(threshold_distance_deg) + ' )'
-    )
-
-    copyGlobalQuery = (
-    'CREATE TABLE IF NOT EXISTS {newtable} AS ' +
-    'SELECT * FROM {table1} ' +
-    'WHERE EXISTS (' +
-        'SELECT 1 ' +
-        'FROM {table2} ' +
-        'WHERE {table1}.' + taxon_field + ' = {table2}.' + taxon_field + ')'
-    )
-
-    countQuery = 'SELECT COUNT(DISTINCT ' + taxon_field + ') FROM {}'
-    countUnion = '(SELECT ' + taxon_field + ' FROM {table1} UNION SELECT ' + taxon_field + ' FROM {table2})'
+    save_db_to_file(conn, database_filename)
 
     id = 1
     result = {}
@@ -210,21 +179,12 @@ with sqlite3.connect(':memory:') as conn:
         uppertable = tableName(above[rv.NAME])
         res = {'boundary': '/'.join((below[rv.NAME], above[rv.NAME]))}
 
-        # Select result labels based on the selected taxon analysis level
-        total_res_label = 'total_' + taxon_level
-        label_temp = list('nlsss')
-        label_temp[4] = taxon_level[0]
-        local_label = ''.join(label_temp)
-        label_temp[1] = 'g'
-        global_label = ''.join(label_temp)
+
 
         cursor.execute(countQuery.format(lowertable))
         res[total_res_label] = cursor.fetchone()[0]
 
         if find_gappers:
-            label_temp = list(local_label)
-            label_temp[-2] = 'j' # j for "Jumping"
-            local_gap_label = ''.join(label_temp)
 
             cursor.executescript(create_union_view(lowertable+'_olderview', [tableName(age[rv.NAME]) for age in itertools.islice(column, 0, id)]))
             conn.commit()
@@ -238,8 +198,6 @@ with sqlite3.connect(':memory:') as conn:
             res[local_gap_label] = cursor.fetchone()[0]
 
             if count_global_crossings:
-                label_temp[1] = 'g'
-                global_gap_label = ''.join(label_temp)
                 cursor.execute(copyGlobalQuery.format(newtable=lowertable + '_globalgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
                 conn.commit()
 
@@ -283,13 +241,7 @@ with sqlite3.connect(':memory:') as conn:
         result[id] = res
         id += 1
     
-    # Detach the in-memory database and save its changes to disk
-    # Connect to the SQLite database on disk
-    conn_disk = sqlite3.connect(database_filename)
-    # Backup the data from memory to disk
-    conn.backup(conn_disk)
-    # Close the database connections
-    conn_disk.close()
+    save_db_to_file(conn, database_filename)
 
 def export_dict_of_dicts_to_csv(data, csv_filename):
     # Extract headers from the first dictionary
@@ -305,14 +257,19 @@ def export_dict_of_dicts_to_csv(data, csv_filename):
             row.update(inner_dict)
             writer.writerow(row)
 
-dropTableQuery = 'DROP TABLE IF EXISTS {}'
-def clearProcessedBoundaries(local=True, glob=True):
+def clearProcessedBoundaries(local=True, glob=True, gappers=True):
     with sqlite3.connect(database_filename) as conn:
         cursor = conn.cursor()
         if local:
             (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_localcrossings')) for interval in column)
         if glob:
             (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_globalcrossings')) for interval in column)
+        if gappers:
+            (cursor.execute(dropViewQuery.format(tableName(interval[rv.NAME])+'_youngerview')) for interval in column)
+            (cursor.execute(dropViewQuery.format(tableName(interval[rv.NAME])+'_olderview')) for interval in column)
+            (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_localgappers')) for interval in column)
+            if glob:
+                (cursor.execute(dropTableQuery.format(tableName(interval[rv.NAME])+'_globalgappers')) for interval in column)
         conn.commit()
 
 # Export the dictionary of dictionaries to a CSV file
