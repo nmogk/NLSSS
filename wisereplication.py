@@ -11,12 +11,14 @@ search_lvl = 5
 threshold_distance_deg = 2
 taxon_level = 'species' # species, genus, family
 env_type = None # None, terr, marine
+taxa_filt = None # plantae, prokaryota,eukaryota^plantae
 count_global_crossings = True
+find_gappers = True # Include taxa which straddle a boundary with any number of series gaps
 
 # Provide the filename for the CSV file
 csv_filename = 'output.csv'
 
-rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl'), ('ENVIRONMENT', 'envtype')])
+rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl'), ('ENVIRONMENT', 'envtype'), ('FILTER_TAXA', 'base_name')])
 
 column_filename = 'column.pkl'
 database_filename = 'paleobiodb.sqlite'
@@ -103,6 +105,15 @@ except FileNotFoundError as err:
 def tableName(textname):
     return textname.replace(' ', '_').lower()
 
+def create_union_view(view_name, table_names):
+    query = f"DROP VIEW IF EXISTS {view_name};\n"  # Drop view if it exists
+    query += f"CREATE VIEW {view_name} AS\n"
+    for i, table_name in enumerate(table_names):
+        if i > 0:
+            query += "UNION ALL\n"
+        query += f"SELECT * FROM {table_name}\n"
+    return query
+
 # Connect to a SQLite database (which includes SpatiaLite)
 with sqlite3.connect(':memory:') as conn:
 
@@ -118,7 +129,9 @@ with sqlite3.connect(':memory:') as conn:
     # Perform spatial queries using SpatiaLite functions
     cursor = conn.cursor()
     
-    occurrence_request = 'occs/list.json?interval_id={}&pres=regular&show=acconly,class,coords,loc&idreso=' + taxon_level + ('&' + rv.ENVIRONMENT + '=' + env_type if env_type is not None else '')
+    occurrence_request = ('occs/list.json?interval_id={}&pres=regular&show=acconly,class,coords,loc&idreso=' + taxon_level + 
+            ('&' + rv.ENVIRONMENT + '=' + env_type if env_type is not None else '') + 
+            ('&' + rv.FILTER_TAXA + '=' + taxa_filt if taxa_filt is not None else ''))
     check_table_query = 'SELECT 1 FROM sqlite_master WHERE type="table" AND name="{}"'
     create_table_query = 'CREATE TABLE {}(' + ', '.join((rv.ID, 'location', rv.PRECISION, rv.SPECIES, rv.GENUS, rv.FAMILY)) +  ')'
     insert_query = 'INSERT INTO {} VALUES (?, MakePoint(? ,? ,4326), ?, ?, ?, ?)'
@@ -173,7 +186,7 @@ with sqlite3.connect(':memory:') as conn:
     result = {}
 
     print('Processing boundaries...')
-    for below, above in tqdm(more_itertools.windowed(column, 2), total=114):
+    for below, above in tqdm(more_itertools.windowed(column, 2), total=len(column)-1):
         # Algorithm:
         # Count total unique species
         # Count unique species which globally cross boundary
@@ -199,6 +212,31 @@ with sqlite3.connect(':memory:') as conn:
         cursor.execute(countQuery.format(lowertable))
         res[total_res_label] = cursor.fetchone()[0]
 
+        if find_gappers:
+            label_temp = list(local_label)
+            label_temp[-2] = 'j' # j for "Jumping"
+            local_gap_label = ''.join(label_temp)
+
+            cursor.executescript(create_union_view(lowertable+'_olderview', [tableName(age) for age in column[0:id]]))
+            conn.commit()
+            cursor.executescript(create_union_view(uppertable+'_youngerview', [tableName(age) for age in column[id:]]))
+            conn.commit()
+
+            cursor.execute(copyQuery.format(newtable=lowertable + '_localgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
+            conn.commit()
+
+            cursor.execute(countQuery.format(lowertable + '_localgappers'))
+            res[local_gap_label] = cursor.fetchone()[0]
+
+            if count_global_crossings:
+                label_temp[1] = 'g'
+                global_gap_label = ''.join(label_temp)
+                cursor.execute(copyGlobalQuery.format(newtable=lowertable + '_globalgappers', table1=lowertable + '_olderview', table2=uppertable + '_youngerview'))
+                conn.commit()
+
+                cursor.execute(countQuery.format(lowertable + '_globalgappers'))
+                res[global_gap_label] = cursor.fetchone()[0]
+
         if count_global_crossings:
             # This query only deletes occurrences without any members that cross the boundary
             # Only needed if we want to count global crossings, since the distance query will also delete occurrences without any crossings
@@ -220,8 +258,18 @@ with sqlite3.connect(':memory:') as conn:
             cursor.execute(countQuery.format(unionresult))
             denom = cursor.fetchone()[0]
             result[id-1][local_label + '_pct'] = 0 if denom == 0 else result[id-1][local_label]/denom
+            
             if count_global_crossings:
                 result[id-1][global_label + '_pct'] = 0 if denom == 0 else result[id-1][global_label]/denom
+            
+            if find_gappers:
+                unionresult = countUnion.format(table1=lowertable + '_olderview', table2=uppertable + '_youngerview')
+                cursor.execute(countQuery.format(unionresult))
+                denom = cursor.fetchone()[0]
+                result[id-1][local_gap_label + '_pct'] = 0 if denom == 0 else result[id-1][local_gap_label]/denom
+
+                if count_global_crossings:
+                    result[id-1][global_gap_label + '_pct'] = 0 if denom == 0 else result[id-1][global_gap_label]/denom
 
         result[id] = res
         id += 1
