@@ -10,19 +10,57 @@ import sql_statements as sql
 import paleobiodb_interface as pbdb
 from paleobiodb_interface import rv
 from multiprocess import Manager
-import os
+from strenum import StrEnum
+from enum import auto
+import sys
+
+class TimeLevel(StrEnum):
+    eon = auto()
+    era = auto()
+    period = auto()
+    epoch = auto()
+    # subepoch = 5
+    age = auto()
+    # subage = 7
+    # zone = 8
+
+    def index(self):
+        cls = self.__class__
+        members = list(cls)
+        return members.index(self) + 1
+
+    def next(self):
+        cls = self.__class__
+        members = list(cls)
+        index = members.index(self) + 1
+        if index >= len(members):
+            raise StopIteration('end of enumeration reached')
+        return members[index]
+
+    @classmethod
+    def abbreviate_levels(cls, level):
+        if level == cls.eon:
+            return 'o'
+        if level == cls.era:
+            return 'r'
+        if level == cls.period:
+            return 'p'
+        if level == cls.epoch:
+            return 'e'
+        if level == cls.age:
+            return 's'
 
 # Settings for 
-search_lvl = 5 # How many levels deep to generate column names: 1-eon, 5-stage
+search_lvl = TimeLevel.age # How many levels deep to generate column names: 1-eon, 5-stage
 threshold_distance_deg = 2
 taxon_level = 'species' # species, genus, family
 env_type = None # None, terr, marine
 taxa_filt = None # plantae, prokaryota,eukaryota^plantae
 count_global_crossings = True
-find_gappers = True # Include taxa which straddle a boundary with any number of series gaps
+find_gappers = False # Include taxa which straddle a boundary with any number of series gaps
 
 # Provide the filename for the CSV file
-csv_filename = 'output.csv'
+csv_filename = 'fbwg_nlsss_base.csv'
 
 column_filename = 'column.pkl'
 database_filename = 'paleobiodb.sqlite'
@@ -43,7 +81,7 @@ pbdb.init_paleobiodb_queries(taxon_level, env_type, taxa_filt)
 # Select result labels based on the selected taxon analysis level
 total_res_label = 'total_' + taxon_level
 label_temp = list('nlsss')
-label_temp[2] = list('orpes')[search_lvl-1] # eOnotherm, eRathem, Period (system), Epoch (series), Stage
+label_temp[2] = TimeLevel.abbreviate_levels(search_lvl)
 label_temp[4] = taxon_level[0]
 
 global_temp = label_temp.copy()
@@ -71,19 +109,20 @@ global_gap_label = ''.join(global_temp)
 
 def queryColumn():
     # Initial query to get highest level intervals
-    res = requests.get(pbdb.api_base+pbdb.interval_request.format(1))
+    res = requests.get(pbdb.api_base+pbdb.interval_request)
     seedData = res.json()
 
     # Load intervals into stack LIFO (oldest on top)
     stack = deque()
     for record in seedData['records']:
-        stack.append(record)
+        if TimeLevel[record[rv.LEVEL]] == TimeLevel.eon:
+            stack.append(record)
 
     def checkSubintervals(parent, childList):
         '''childList must be sorted youngest to oldest'''
         pointer = parent[rv.MIN_MA]
         for child in childList:
-            if child[rv.PARENT] != parent[rv.ID]:
+            if TimeLevel[child[rv.LEVEL]].index() != TimeLevel(parent[rv.LEVEL]).next().index() or child[rv.PARENT] != parent[rv.ID]:
                 continue
             if child[rv.MIN_MA] != pointer:
                 return False
@@ -91,23 +130,24 @@ def queryColumn():
         return parent[rv.MAX_MA] == pointer
 
     column = deque()
-    t = tqdm(total=115)
+    t = tqdm(total=117)
     while True:
         if len(stack) <= 0:
             break
         interval = stack.pop()
 
-        if interval[rv.LEVEL] >= search_lvl:
+        if TimeLevel[interval[rv.LEVEL]].index() >= search_lvl.index():
             column.append(interval)
             t.update(1)
             continue
 
-        res = requests.get(pbdb.api_base+pbdb.interval_request.format(interval[rv.LEVEL] + 1)+pbdb.column_parent_fragment.format(interval[rv.MIN_MA], interval[rv.MAX_MA]))
+        res = requests.get(pbdb.api_base+pbdb.interval_request+pbdb.column_parent_fragment.format(interval[rv.MIN_MA], interval[rv.MAX_MA]))
         subintervals = res.json()
 
         if checkSubintervals(interval, subintervals['records']):
             for subint in subintervals['records']:
-                stack.append(subint)
+                if TimeLevel[subint[rv.LEVEL]].index() == TimeLevel(interval[rv.LEVEL]).next().index():
+                    stack.append(subint)
         else:
             column.append(interval)
             t.update(1)
@@ -120,6 +160,7 @@ def tableName(textname):
 def retreive_paleobiodb_data(column):
     # Connect to a SQLite database (which includes SpatiaLite)
     with sqlite3.connect(':memory:') as conn:
+        success = True
 
         # Attach the database from disk to memory. For a variety of setups, this will shave minutes off processing time
         sql.load_db_from_file(conn, database_filename)
@@ -146,20 +187,26 @@ def retreive_paleobiodb_data(column):
                 continue
             
             res = requests.get(pbdb.api_base+pbdb.occurrence_request.format(interval[rv.ID]))
-            occs = res.json()['records']
+            try:
+                occs = res.json()['records']
+            except KeyError:
+                print(f'Error returned when querying PaleoBioDB for {interval[rv.NAME]}. Please refresh geological column and download data again.')
+                success = False
+                continue
             # Load result into database
             cursor.execute(sql.create_table_query.format(tablename))
             cursor.executemany(sql.insert_query.format(tablename), (get_insert_values(occ) for occ in occs))
             conn.commit()
 
         sql.save_db_to_file(conn, database_filename)
+        return success
 
 def find_bounary_crossers(column):
     print('Processing boundaries...')
     manager = Manager()
     result = manager.dict()
     
-    def worker_tasks(id, window):
+    def worker_tasks(input):
         # Algorithm:
         # Count total unique species
         # Count unique species which globally cross boundary
@@ -169,11 +216,13 @@ def find_bounary_crossers(column):
         #     Count remaining unique species globally and locally
         # Save results data
         # {id: {boundary: (name), total_species:, ngsss:, nlsss:, ngsjs:, nlsjs:, ngsss_pct:, nlsss_pct:, ngsjs_pct:, nlsjs_pct:}}
-
+        id, window = input
         below, above = window
-        with sqlite3.connect(':memory:') as conn:
+        with sqlite3.connect(database_filename, 60) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             # Perform spatial queries using SpatiaLite functions
             cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
 
             lowertable = tableName(below[rv.NAME])
             uppertable = tableName(above[rv.NAME])
@@ -219,21 +268,21 @@ def find_bounary_crossers(column):
 
             result[id] = res
 
-    ppool = manager.pool(os.cpu_count() - 1)
+    ppool = manager.Pool(1)
     with tqdm(total=len(column)-1) as pbar:
-        for _ in ppool.imap_unordered(worker_tasks, enumerate(more_itertools.windowed(column, 2), 1)):
+        for _ in ppool.imap_unordered(worker_tasks, list(enumerate(more_itertools.windowed(column, 2), 1))):
             pbar.update()
 
     ppool.close()
     ppool.join()
 
-    with sqlite3.connect(':memory:') as conn:
-        sql.save_db_to_file(conn, database_filename)
+    # with sqlite3.connect(':memory:') as conn:
+    #     sql.save_db_to_file(conn, database_filename)
 
     return result
 
 def overlap_statistics(column, result):
-    with sqlite3.connect(':memory:') as conn:
+    with sqlite3.connect(database_filename) as conn:
         # Perform spatial queries using SpatiaLite functions
         cursor = conn.cursor()
 
@@ -287,21 +336,25 @@ def clearProcessedBoundaries(local=True, glob=True, gappers=True):
                 (cursor.execute(sql.dropTableQuery.format(tableName(interval[rv.NAME])+'_globalgappers')) for interval in column)
         conn.commit()
 
-print('Loading column information...')
-try:
-    with open(column_filename, 'rb') as f:
-        column = pickle.load(f)
-except FileNotFoundError as err:
-    column = queryColumn()
-    with open(column_filename, 'wb') as f:
-        pickle.dump(column, f)
+if __name__ == "__main__":
+    print('Loading column information...')
+    try:
+        with open(column_filename, 'rb') as f:
+            column = pickle.load(f)
+    except FileNotFoundError as err:
+        column = queryColumn()
+        with open(column_filename, 'wb') as f:
+            pickle.dump(column, f)
+    # for line in column:
+    #     print(line)
 
-retreive_paleobiodb_data(column) # Single process
-result = find_bounary_crossers(column) # Multiprocess
-overlap_statistics(column, result) # Single process
+    download_success = retreive_paleobiodb_data(column) # Single process
+    if not download_success:
+        sys.exit()
 
-# Export the dictionary of dictionaries to a CSV file
-export_dict_of_dicts_to_csv(result, csv_filename)
-print(f'Results written to: {csv_filename}')
-# for line in column:
-#     print(line)
+    result = find_bounary_crossers(column) # Multiprocess
+    overlap_statistics(column, result) # Single process
+
+    # Export the dictionary of dictionaries to a CSV file
+    export_dict_of_dicts_to_csv(result, csv_filename)
+    print(f'Results written to: {csv_filename}')

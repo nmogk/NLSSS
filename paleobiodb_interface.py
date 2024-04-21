@@ -4,13 +4,13 @@ api_base = 'https://paleobiodb.org/data1.2/'
 
 # Translation between meaning and specifid field id returned (or accepted) in the paleobiodb API
 rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag'), 
-                               ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'lvl'), 
+                               ('MIN_MA', 'lag'), ('PARENT', 'pid'), ('LEVEL', 'itp'), 
                                ('LAT', 'lat'), ('LON', 'lng'), ('SPECIES', 'tna'), 
                                ('PRECISION', 'prc'), ('FAMILY', 'fml'), ('GENUS', 'gnl'), 
                                ('ENVIRONMENT', 'envtype'), ('FILTER_TAXA', 'base_name')])
 
 
-interval_request = 'intervals/list.json?scale=1&level={}'
+interval_request = 'intervals/list.json?scale=1'
 column_parent_fragment = '&min_ma={}&max_ma={}'
 
 occurrence_request = ''

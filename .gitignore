@@ -1,3 +1,4 @@
 *.pkl
-*.sqlite
+*.sqlite*
 *.csv
+*.pyc
