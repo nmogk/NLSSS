@@ -13,9 +13,15 @@ use_stages = True
 do_smooth = True
 step = 6
 
-sloss_ms = np.array([462, 396, 324, 132, 60])
-peters_ms = np.array([252, 186])
-mogk_ms = np.array([366, 24])
+if use_stages:
+    sloss_ms = np.array([467, 419, 324, 132, 60])
+    peters_ms = np.array([252, 199])
+    mogk_ms = np.array([441, 294, 86, 20])
+
+else:
+    sloss_ms = np.array([462, 396, 324, 132, 60])
+    peters_ms = np.array([252, 186])
+    mogk_ms = np.array([366, 24])
 
 try:
     with open(data_filename, 'rb') as f:
