@@ -62,8 +62,13 @@ def kernel_smooth(y, radius, edge_mode):
     kernel = np.array([0.1, .2, 0.4,  .2 ,0.1])#np.ones(window)/window
     return convolve1d(y, kernel, mode=edge_mode)
 
-def plot(x, y, env_title, max_age, do_smooth, use_stages):
-    if use_stages:
+def plot(x, y, env_title, max_age, do_smooth, use_stages, stage_axis):
+    
+    if stage_axis:
+        sloss_ms = np.array([12, 24, 34, 66, 79])
+        peters_ms = np.array([47, 55])
+        mogk_ms = np.array([17, 39, 74, 87])
+    elif use_stages:
         sloss_ms = np.array([467, 419, 324, 132, 60])
         peters_ms = np.array([252, 199])
         mogk_ms = np.array([441, 294, 86, 20])
@@ -74,8 +79,6 @@ def plot(x, y, env_title, max_age, do_smooth, use_stages):
 
     plt.title(f'Number of {env_title}gap bound packages{", smoothed" if do_smooth  else ""}')
     axes = plt.gca()
-    axes.set_xlim([0, max_age])
-    axes.set_xlabel('Ma')
     axes.set_ylabel('Package count')
     for bdry in sloss_ms:
         plt.axvline(bdry, color='gray', linestyle='--', label='Sloss (1963) boundaries')
@@ -83,9 +86,16 @@ def plot(x, y, env_title, max_age, do_smooth, use_stages):
         plt.axvline(bdry, color='blue', linestyle='--', label='Peters (2008) boundaries')
     for bdry in mogk_ms:
         plt.axvline(bdry, color='gold', linestyle=':', label='Additional boundaries')
-    plt.plot(x,y, label=f'Gap bound packages{", smoothed" if do_smooth  else ""}')
-    plt.scatter(x, y)
-    axes.invert_xaxis()
+
+    if stage_axis:
+         plt.plot(y[::-1], '.-b', label=f'Gap bound packages{", smoothed" if do_smooth  else ""}')
+         axes.set_xlabel('Stage')
+    else:
+        axes.set_xlim([0, max_age])
+        axes.set_xlabel('Ma')
+        plt.plot(x,y, label=f'Gap bound packages{", smoothed" if do_smooth  else ""}')
+        plt.scatter(x, y)
+        axes.invert_xaxis()
 
     handles, labels = plt.gca().get_legend_handles_labels()
 
@@ -103,7 +113,9 @@ def main():
 
     # Core options
     parser.add_argument('fname', metavar='FILENAME', help='Name of data file to analyze or cache downloads.')
-    parser.add_argument('-n', '--num', nargs='?', type=int, default=0, const=6, metavar='BIN', 
+    group = parser.add_mutually_exclusive_group()
+
+    group.add_argument('-n', '--num', nargs='?', type=int, default=0, const=6, metavar='BIN', 
                         help='Use numeric age bins instead of stages. Optionally set BIN size, default 6Ma.')
     parser.add_argument('-e', '--env', choices=['marine', 'non-marine'], help='Only use packages from specified environment.')
     parser.add_argument('-s', '--smooth', action='store_true', dest='do_smooth', help='Apply a windowed filter to the output.')
@@ -112,6 +124,7 @@ def main():
     parser.add_argument('-x', action='store_false', dest='compatibility_check', help='Supress data compatibility checking and load the data in the file.')
     parser.add_argument('-t', '--overlap-type', choices=['intersect', 'initiate', 'truncate', 'endemic', 'through', 'xupper', 'xlower'], default='intersect', 
                         help='Types of overlap relationships to count. intersect (default): any part of package overlaps interval; initate: package starts in interval and crosses upper boundary;truncate: package crosses lower boundary and ends in interval; endemic: package is wholly contained in interval; through: package crosses both interval boundaries; xupper: combines initiate and through; xlower: combines truncate and through')
+    group.add_argument('--stages', action='store_true', help='Plot by stage number, rather than by age of stage.')
 
     # Parameters that probably shouldn't be changed, but I don't want to hard code them
     parser.add_argument('--dont-filter-zero', action='store_false', dest='filter_zero', help='Do not remove zero height sediment packages.')
@@ -131,7 +144,7 @@ def main():
         binfo = str(header["bins"])+" Ma" if header["bins"]!=0 else "stages"
 
         if args.info:
-            print(f'Bins: {binfo}, Env: {header["env"]}, Max Age: {header["max_age"]} Ma, Filter 0 height: {header["filter0"]}, Downloaded: {dltime}')
+            print(f'Bins: {binfo}, Env: {header["env"]}, Overlap type: {args.overlap_type}, Max Age: {header["max_age"]} Ma, Filter 0 height: {header["filter0"]}, Downloaded: {dltime}')
             return
 
         if download_settings != header:
@@ -142,6 +155,7 @@ def main():
                 args.max_age = header["max_age"]
                 args.num = header["bins"]
                 args.env = header["env"]
+                args.overlap_type = header["type"]
                 args.use_stages = args.num == 0
 
     except Exception as e:
@@ -155,8 +169,22 @@ def main():
         for a, c in zip((x, y)):
             print(f'{a}, {c}')
 
-    args.env_title = '' if args.env is None else args.env+' '
-    plot(x, y, args.env_title, args.max_age, args.do_smooth, args.use_stages)
+    env_fragment = '' if args.env is None else args.env+' '
+    if args.overlap_type == 'truncate':
+        type_fragment = 'truncating '
+    elif args.overlap_type == 'endemic':
+        type_fragment = 'endemic '
+    elif args.overlap_type == 'through':
+        type_fragment = 'throughgoing '
+    elif args.overlap_type == 'xupper':
+        type_fragment = 'upper boundary crossing '
+    elif args.overlap_type == 'xlower':
+        type_fragment = 'lower boundary crossing '
+    else:
+        type_fragment = ''
+
+    args.env_title = env_fragment + type_fragment
+    plot(x, y, args.env_title, args.max_age, args.do_smooth, args.use_stages, args.stages)
 
 if __name__ == '__main__':
     main()
