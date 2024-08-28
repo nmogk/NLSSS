@@ -171,7 +171,9 @@ def main():
             print(f'{a},{c}')
 
     env_fragment = '' if args.env is None else args.env+' '
-    if args.overlap_type == 'truncate':
+    if args.overlap_type == 'initiate':
+        type_fragment = 'initiating '
+    elif args.overlap_type == 'truncate':
         type_fragment = 'truncating '
     elif args.overlap_type == 'endemic':
         type_fragment = 'endemic '
