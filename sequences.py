@@ -149,7 +149,7 @@ def main():
 
         if download_settings != header:
             if args.compatibility_check:
-                print(f'File exists but contains incompatible data. Bins: {binfo}, Env: {header["env"]}')
+                print(f'File exists but contains incompatible data. Bins: {binfo}, Env: {header["env"]}, Overlap type: {args.overlap_type}')
                 return
             else:
                 args.max_age = header["max_age"]
@@ -166,8 +166,9 @@ def main():
         y = kernel_smooth(y, args.kernel_radius, args.edge_mode)
 
     if args.print:
-        for a, c in zip((x, y)):
-            print(f'{a}, {c}')
+        print('x,packages')
+        for a, c in zip(x, y):
+            print(f'{a},{c}')
 
     env_fragment = '' if args.env is None else args.env+' '
     if args.overlap_type == 'truncate':
