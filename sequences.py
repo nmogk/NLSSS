@@ -131,7 +131,7 @@ def main():
     parser.add_argument('--max-age', type=int, default=540, help='Maximum numeric age bin and horizontal axis value. Default 540Ma')
     parser.add_argument('--kernel-radius', type=int, default=2, metavar='RAD', help='Kernel size will be 2*RAD + 1. Default 2.')
     parser.add_argument('--smoothing-type', choices=['gaussian', 'uniform'], default='gaussian', help='Kernel shape used to perform smoothing.')
-    parser.add_argument('--edge-mode', choices=['nearest', 'constant', 'mirror', 'reflect'], default='nearest', help='Edge behavior for smoothing.')
+    parser.add_argument('--edge-mode', choices=['nearest', 'constant', 'mirror', 'reflect'], default='nearest', help='Edge behavior for smoothing. Default "nearest"')
     
     args = parser.parse_args()
     args.use_stages = args.num == 0
