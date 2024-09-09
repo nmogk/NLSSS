@@ -6,7 +6,7 @@ import requests as req
 import pickle
 from tqdm import tqdm
 import matplotlib as mpl
-from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
+from matplotlib.colors import Normalize
 import operator
 
 
@@ -169,14 +169,22 @@ x, y = m(longs, lats)
 column_dots = m.scatter(x,y,50,marker='o',color='k', label='Gap bound packages')
 
 # Custom colormap: maps 0 to fully transparent, 1 to blue
-cmap = mpl.colormaps['Paired']
+cmap = mpl.colormaps['Set2']
 # Normalization: values from 0 to 1
 norm = Normalize(vmin=0, vmax=2*np.pi)
 arrow_lat, arrow_lon = extract_arrows(paleoflowData)
 us, vs = extract_uv(paleoflowData)
 arr_x, arr_y = m(arrow_lon, arrow_lat)
 
-flows = plt.quiver(arr_x, arr_y, us, vs, np.arctan2(us, vs)+np.pi, cmap=cmap, norm=norm, pivot='middle', angles='xy', scale=30, label='Paleocurrents')
+flows = plt.quiver(arr_x, arr_y, us, vs, np.arctan2(us, vs)+np.pi, cmap=cmap, norm=norm, pivot='tail', angles='xy', scale=25, label='Paleocurrents')
+
+# these are matplotlib.patch.Patch properties
+props = dict(boxstyle='round', facecolor='white')
+
+# place a text box in upper left in axes coords
+megasequence_text = plt.text(0.05, 0.15, "Macrostratigraphy", transform=plt.gca().transAxes, fontsize=32,
+        verticalalignment='top', bbox=props)
+
 
 plt.title("North American Macrostratigraphy By Time")
 
@@ -192,9 +200,20 @@ def update(frame):
 
     # Indicator list: 0 for transparent, 1 for colored
     color_indicator = flow_animation[frame]
-
     flows.set_alpha(color_indicator)
-    return (column_dots, flows)
+
+    age = max_age - step * frame
+    megasequences = {max_age: ['Sauk', 'xkcd:snot green'], 462: ['Tippecanoe', 'xkcd:slate green'], 396: ['Kaskaskia', 'xkcd:peach'], 
+                     324: ['Appalachian (Absaroka)', 'xkcd:warm purple'], 252: ['Triassic (Absaroka)', 'xkcd:pinky purple'], 186: ['Jurassic (Absaroka)', 'xkcd:aquamarine'], 
+                     132: ['Zuni', 'xkcd:greyish brown'], 60: ['Tejas', 'xkcd:sunny yellow'], 24: ['post-Tejas', 'xkcd:buff']}
+    boundaries = np.array([max_age, 462, 396, 324, 252, 186, 132, 60, 24])
+    index = np.count_nonzero(boundaries >= age) - 1
+    megasequence = megasequences[boundaries[index]]
+
+    megasequence_text.set_text(megasequence[0])
+    megasequence_text.set_color(megasequence[-1])
+
+    return (column_dots, flows, megasequence_text)
 
 plt.legend(loc='best', framealpha=1)
 
@@ -203,7 +222,9 @@ print('Animating plot...')
 ani = animation.FuncAnimation(plt.gcf(), func=update, frames=range(frames), interval=30)
 
 print('Saving animation...')
-ani.save(filename="na-macrostrat.gif", writer="pillow")
+ani.save(filename="na-macrostrat.gif", writer="pillow", fps=1.0)
+# FFwriter = animation.FFMpegWriter(fps=10)
+# ani.save(filename="na-macrostrat.mov", writer=FFwriter)
 
 print('Processing complete!')
-plt.show()
+# plt.show()
