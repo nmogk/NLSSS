@@ -7,6 +7,10 @@ import pickle
 from tqdm import tqdm
 import matplotlib as mpl
 from matplotlib.colors import Normalize
+from matplotlib.image import BboxImage
+from matplotlib.transforms import Bbox, TransformedBbox
+from matplotlib.legend_handler import HandlerPolyCollection
+from matplotlib.collections import PolyCollection
 import operator
 
 
@@ -18,7 +22,15 @@ fname = 'column_locs.pkl'
 animation_fname = 'sequence_animation_2ma.pkl'
 paleoflow_fname = 'paleoflow_brandchadwick.pkl'
 flow_animation_fname = 'paleoflow_animation.pkl'
+out_image_fname = 'na-macrostrat.gif'
 frames = 270
+frame_delay = 30 #ms
+
+plot_columns = True
+plot_paleoflows = True
+animate = True
+save_image = False
+show_plot = True
 
 max_age = 540 # Ma
 step = max_age/frames # Ma
@@ -165,42 +177,50 @@ m.drawparallels(np.arange(-80.,81.,10.))
 m.drawmeridians(np.arange(-180.,181.,10.))
 m.drawmapboundary(fill_color='aqua') 
 
-x, y = m(longs, lats)
-column_dots = m.scatter(x,y,50,marker='o',color='k', label='Gap bound packages')
+if plot_columns:
+    x, y = m(longs, lats)
+    column_dots = m.scatter(x,y,50,marker='o',color='k', label='Gap bound packages')
 
-# Custom colormap: maps 0 to fully transparent, 1 to blue
+# Custom colormap for paleoflow directions
 cmap = mpl.colormaps['Set2']
-# Normalization: values from 0 to 1
+# Normalization: values from 0 to 2pi
 norm = Normalize(vmin=0, vmax=2*np.pi)
-arrow_lat, arrow_lon = extract_arrows(paleoflowData)
-us, vs = extract_uv(paleoflowData)
-arr_x, arr_y = m(arrow_lon, arrow_lat)
 
-flows = plt.quiver(arr_x, arr_y, us, vs, np.arctan2(us, vs)+np.pi, cmap=cmap, norm=norm, pivot='tail', angles='xy', scale=25, label='Paleocurrents')
+if plot_paleoflows:
+    arrow_lat, arrow_lon = extract_arrows(paleoflowData)
+    us, vs = extract_uv(paleoflowData)
+    arr_x, arr_y = m(arrow_lon, arrow_lat)
 
-# these are matplotlib.patch.Patch properties
-props = dict(boxstyle='round', facecolor='white')
+    flows = plt.quiver(arr_x, arr_y, us, vs, np.arctan2(us, vs)+np.pi, cmap=cmap, norm=norm, pivot='tail', angles='xy', scale=25, label='Paleocurrents')
 
-# place a text box in upper left in axes coords
-megasequence_text = plt.text(0.05, 0.15, "Macrostratigraphy", transform=plt.gca().transAxes, fontsize=32,
-        verticalalignment='top', bbox=props)
+    # these are matplotlib.patch.Patch properties
+    props = dict(boxstyle='round', facecolor='black')
+
+    # place a text box in upper left in axes coords
+    megasequence_text = plt.text(0.04, 0.17, "Macrostratigraphy", transform=plt.gca().transAxes, color='white', fontsize=28,
+            verticalalignment='top', fontweight='bold', bbox=props)
 
 
-plt.title("North American Macrostratigraphy By Time")
+plt.title(f"North American Macrostratigraphy By Time ({step} Ma bins)")
 
 viridis = mpl.colormaps['viridis']
 
 def update(frame):
-    filtered_dict = {k:v for k,v in coldata.items() if k in animation_data[frame]}
-    lats, longs = extract_coords(filtered_dict)
-    x, y = m(longs, lats)
-    data = np.stack([x, y]).T
-    column_dots.set_offsets(data)
-    column_dots.set_color(viridis(frame/frames))
+    res = []
+    if plot_columns:
+        filtered_dict = {k:v for k,v in coldata.items() if k in animation_data[frame]}
+        lats, longs = extract_coords(filtered_dict)
+        x, y = m(longs, lats)
+        data = np.stack([x, y]).T
+        column_dots.set_offsets(data)
+        column_dots.set_color(viridis(frame/frames))
+        res.append(column_dots)
 
-    # Indicator list: 0 for transparent, 1 for colored
-    color_indicator = flow_animation[frame]
-    flows.set_alpha(color_indicator)
+    if plot_paleoflows:
+        # Indicator list: 0 for transparent, 1 for colored
+        color_indicator = flow_animation[frame]
+        flows.set_alpha(color_indicator)
+        res.append(flows)
 
     age = max_age - step * frame
     megasequences = {max_age: ['Sauk', 'xkcd:snot green'], 462: ['Tippecanoe', 'xkcd:slate green'], 396: ['Kaskaskia', 'xkcd:peach'], 
@@ -212,19 +232,44 @@ def update(frame):
 
     megasequence_text.set_text(megasequence[0])
     megasequence_text.set_color(megasequence[-1])
+    res.append(megasequence_text)
 
-    return (column_dots, flows, megasequence_text)
+    return tuple(res)
 
-plt.legend(loc='best', framealpha=1)
+class HandlerImage(HandlerPolyCollection):
+    def legend_artist(self, legend, orig_handle, fontsize, handlebox):
+        x0, y0 = handlebox.xdescent, handlebox.ydescent
+        width, height = handlebox.width, handlebox.height
+        
+        x = np.linspace(1, -1, 100)
+        y = np.linspace(-1, 1, 100)
+        # full coordinate arrays
+        xx, yy = np.meshgrid(y, x) # Not typo
+        zz = np.arctan2(xx, yy)+np.pi
 
+        bbox0 = Bbox.from_bounds(x0, y0, width, height)
+        bbox = TransformedBbox(bbox0, handlebox.get_transform())
 
-print('Animating plot...')
-ani = animation.FuncAnimation(plt.gcf(), func=update, frames=range(frames), interval=30)
+        img = BboxImage(bbox, cmap=cmap, norm=norm, data=zz)
+        arrow = mpl.patches.FancyArrowPatch((x0, y0+height/2), (x0+width, y0+height/2),
+                                 mutation_scale=50, transform=handlebox.get_transform())
+        img.set_clip_path(arrow)
 
-print('Saving animation...')
-ani.save(filename="na-macrostrat.gif", writer="pillow", fps=1.0)
-# FFwriter = animation.FFMpegWriter(fps=10)
-# ani.save(filename="na-macrostrat.mov", writer=FFwriter)
+        handlebox.add_artist(img)
+        return img
+
+plt.legend(loc='best', fontsize=16, framealpha=1, handler_map={PolyCollection: HandlerImage()})
+
+if animate:
+    print('Animating plot...')
+    ani = animation.FuncAnimation(plt.gcf(), func=update, frames=range(frames), interval=frame_delay)
+
+    if save_image:
+        print('Saving animation...')
+        ani.save(filename=out_image_fname, writer="pillow", fps=1000/frame_delay)
+        # FFwriter = animation.FFMpegWriter(fps=10)
+        # ani.save(filename="na-macrostrat.mov", writer=FFwriter)
 
 print('Processing complete!')
-# plt.show()
+if show_plot:
+    plt.show()
