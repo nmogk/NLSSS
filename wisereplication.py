@@ -13,42 +13,7 @@ from multiprocess import Manager
 from strenum import StrEnum
 from enum import auto
 import sys
-
-class TimeLevel(StrEnum):
-    eon = auto()
-    era = auto()
-    period = auto()
-    epoch = auto()
-    # subepoch = 5
-    age = auto()
-    # subage = 7
-    # zone = 8
-
-    def index(self):
-        cls = self.__class__
-        members = list(cls)
-        return members.index(self) + 1
-
-    def next(self):
-        cls = self.__class__
-        members = list(cls)
-        index = members.index(self) + 1
-        if index >= len(members):
-            raise StopIteration('end of enumeration reached')
-        return members[index]
-
-    @classmethod
-    def abbreviate_levels(cls, level):
-        if level == cls.eon:
-            return 'o'
-        if level == cls.era:
-            return 'r'
-        if level == cls.period:
-            return 'p'
-        if level == cls.epoch:
-            return 'e'
-        if level == cls.age:
-            return 's'
+from build_geo_column import TimeLevel, queryColumn
 
 # Settings for 
 search_lvl = TimeLevel.age # How many levels deep to generate column names: 1-eon, 5-stage
@@ -107,52 +72,6 @@ global_gap_label = ''.join(global_temp)
 # Delete species (sic, occurrences?) located more than 2 degrees away from any other specimen on the other side of the boundary
 # Count species
 
-def queryColumn():
-    # Initial query to get highest level intervals
-    res = requests.get(pbdb.api_base+pbdb.interval_request)
-    seedData = res.json()
-
-    # Load intervals into stack LIFO (oldest on top)
-    stack = deque()
-    for record in seedData['records']:
-        if TimeLevel[record[rv.LEVEL]] == TimeLevel.eon:
-            stack.append(record)
-
-    def checkSubintervals(parent, childList):
-        '''childList must be sorted youngest to oldest'''
-        pointer = parent[rv.MIN_MA]
-        for child in childList:
-            if TimeLevel[child[rv.LEVEL]].index() != TimeLevel(parent[rv.LEVEL]).next().index() or child[rv.PARENT] != parent[rv.ID]:
-                continue
-            if child[rv.MIN_MA] != pointer:
-                return False
-            pointer = child[rv.MAX_MA]
-        return parent[rv.MAX_MA] == pointer
-
-    column = deque()
-    t = tqdm(total=117)
-    while True:
-        if len(stack) <= 0:
-            break
-        interval = stack.pop()
-
-        if TimeLevel[interval[rv.LEVEL]].index() >= search_lvl.index():
-            column.append(interval)
-            t.update(1)
-            continue
-
-        res = requests.get(pbdb.api_base+pbdb.interval_request+pbdb.column_parent_fragment.format(interval[rv.MIN_MA], interval[rv.MAX_MA]))
-        subintervals = res.json()
-
-        if checkSubintervals(interval, subintervals['records']):
-            for subint in subintervals['records']:
-                if TimeLevel[subint[rv.LEVEL]].index() == TimeLevel(interval[rv.LEVEL]).next().index():
-                    stack.append(subint)
-        else:
-            column.append(interval)
-            t.update(1)
-    t.close()
-    return column
 
 def tableName(textname):
     return textname.replace(' ', '_').lower()
@@ -342,7 +261,7 @@ if __name__ == "__main__":
         with open(column_filename, 'rb') as f:
             column = pickle.load(f)
     except FileNotFoundError as err:
-        column = queryColumn()
+        column = queryColumn(search_lvl)
         with open(column_filename, 'wb') as f:
             pickle.dump(column, f)
     # for line in column:
