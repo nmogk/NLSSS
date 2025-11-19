@@ -1,4 +1,5 @@
 from strenum import StrEnum
+import requests as req
 
 api_base = 'https://paleobiodb.org/data1.2/'
 
@@ -10,6 +11,8 @@ rv = StrEnum('ResponseVocab', [('ID', 'oid'), ('NAME', 'nam'), ('MAX_MA', 'eag')
                                ('ENVIRONMENT', 'envtype'), ('FILTER_TAXA', 'base_name')])
 
 int_vocab = StrEnum('IntervalVocab', [('ID', 'oid'), ('NAME', 'nam'), ('PARENT', 'pid'), ('MAX_MA', 'eag'), ('MIN_MA', 'lag'), ('LEVEL', 'itp')])
+
+clad_vocab = StrEnum('CladogramVocab', [('ID', 'oid'), ('NAME', 'nam'), ('PARENT_ID', 'par'), ('FLAG', 'flg')])
 
 interval_request = 'intervals/list.json?scale=1'
 column_parent_fragment = '&min_ma={}&max_ma={}'
@@ -24,9 +27,15 @@ def init_paleobiodb_queries(taxon_level, env_type=None, taxa_filt=None):
 
 
 def query_geological_intervals(min_ma=None, max_ma=None):
-    import requests as req
     query_extra = column_parent_fragment.format(min_ma, max_ma) if min_ma is not None and max_ma is not None else ''
 
     res = req.get(api_base + interval_request + query_extra)
+    data = res.json()['records']
+    return data
+
+def query_cladogram(taxon_name):
+    taxonomy_request = 'occs/taxa.json?base_name={}'
+
+    res = req.get(api_base + taxonomy_request.format(taxon_name))
     data = res.json()['records']
     return data
