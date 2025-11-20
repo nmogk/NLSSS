@@ -5,6 +5,7 @@ from paleobiodb_interface import clad_vocab as cv
 def cladogram_lengths(taxon_name):
     # Initial query to get cladogram data
     taxa = pbdb.query_cladogram(taxon_name)
+    max = 0
 
     # Load cladogram into stack LIFO (root on top)
     backlog = deque()
@@ -21,9 +22,12 @@ def cladogram_lengths(taxon_name):
         elif taxon[cv.PARENT_ID] not in cladogram.keys(): 
             backlog.append(taxon)
         else:
-            cladogram[taxon[cv.ID]] = cladogram[taxon[cv.PARENT_ID]] + 1
+            num = cladogram[taxon[cv.PARENT_ID]] + 1
+            if num > max:
+                max = num
+            cladogram[taxon[cv.ID]] = num
 
-    return cladogram
+    return cladogram, max
 
 if __name__ == '__main__':
     import argparse
@@ -32,6 +36,6 @@ if __name__ == '__main__':
     parser.add_argument('taxon_name', type=str, help='Taxon name to query')
     args = parser.parse_args()
 
-    lengths = cladogram_lengths(args.taxon_name)
+    lengths, _ = cladogram_lengths(args.taxon_name)
     for taxon_id, length in lengths.items():
         print(f'Taxon ID: {taxon_id}, Length from root: {length}')
