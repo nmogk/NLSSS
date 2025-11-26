@@ -27,7 +27,7 @@ def init_paleobiodb_queries(taxon_level, env_type=None, taxa_filt=None):
 
 
 def query_occs_by_taxon(taxa_filt):
-    taxon_occs_request = f'occs/list.json?{rv.FILTER_TAXA}={taxa_filt}&show=acconly,coords'
+    taxon_occs_request = f'occs/list.json?{rv.FILTER_TAXA}={taxa_filt}&show=acconly,class,coords'
 
     res = req.get(api_base + taxon_occs_request)
     data = res.json()['records']

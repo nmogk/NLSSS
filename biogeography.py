@@ -32,14 +32,16 @@ def plot_taxon_occurrences_3d(
         raise ValueError("No occurrences returned from PBDB for the specified taxon")
         
     # Prepare taxon identifiers for distance computation
-    cladogram_distances, max_dist = cladogram_lengths(taxon_identifier)
+    # cladogram_distances, max_dist = cladogram_lengths(taxon_identifier)
 
     # Extract required fields and filter coordinates
     lats, lons, ages, cladd = ([] for i in range(4))
-    maxage = 0.0
+
+    maxage= 0.0
+    max_dist = 0
     for occ in occurrences:
         # Skip records with missing required fields
-        if rv.LAT not in occ or rv.LON not in occ or rv.MIN_MA not in occ or rv.MAX_MA not in occ or rv.TAXON_ID not in occ:
+        if rv.LAT not in occ or rv.LON not in occ or rv.MIN_MA not in occ or rv.MAX_MA not in occ or rv.TAXON_ID not in occ or rv.GENUS not in occ:
             continue
 
         max_ma = occ[rv.MAX_MA]
@@ -54,14 +56,20 @@ def plot_taxon_occurrences_3d(
             if age > max_allowed or age < min_allowed:
                 continue
                 
-        if occ[rv.TAXON_ID] not in cladogram_distances.keys():
-            continue
+        # if occ[rv.TAXON_ID] not in cladogram_distances.keys():
+        #     continue
+
 
         lats.append(float(occ[rv.LAT]))
         lons.append(float(occ[rv.LON]))
         ages.append(age)
-        cladd.append(cladogram_distances[occ[rv.TAXON_ID]])
+        # cladd.append(cladogram_distances[occ[rv.TAXON_ID]])
+        
+        newhash = hash(occ[rv.GENUS]) % 100 # Dummy distance based on hash of genus name
 
+        cladd.append(newhash)  
+        if newhash > max_dist:
+            max_dist = newhash
                  
     # Build arrays for plotting
     lats = np.array(lats)
@@ -71,7 +79,7 @@ def plot_taxon_occurrences_3d(
 
     # Prepare plotting preferences
     plotting_preferences = plotting_preferences or {}
-    cmap = plotting_preferences.get('cmap', 'viridis')
+    cmap = plotting_preferences.get('cmap', 'gist_rainbow')
     marker = plotting_preferences.get('marker', 'o')
     ms = plotting_preferences.get('markersize', 8)
     alpha = plotting_preferences.get('alpha', 0.8)
@@ -99,8 +107,8 @@ def plot_taxon_occurrences_3d(
     ax.set_ylim(-90, 90)
 
     # Colorbar
-    cbar = fig.colorbar(sc, ax=ax, shrink=0.6)
-    cbar.set_label('Cladogram distance')
+    # cbar = fig.colorbar(sc, ax=ax, shrink=0.6)
+    # cbar.set_label('Cladogram distance')
 
     # Finalize: save or show
     plt.show()
@@ -162,7 +170,15 @@ def save_and_plot_platecarree_image(output_png: str = 'plate_carree.png', *, dpi
     return fig2, ax2
 
 
+def command_line_interface():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Plot occurrences of a taxon from PaleobioDB in 3D.')
+    parser.add_argument('taxon', type=str, help='Taxon name or PBDB taxon_no to plot occurrences for.')
+    args = parser.parse_args()
+    plot_taxon_occurrences_3d(args.taxon)
+
 if __name__ == "__main__":
     # Example usage
-    plot_taxon_occurrences_3d("Rhinocerotinae")
+    command_line_interface()
     # save_and_plot_platecarree_image('plate_carree.png', dpi=150, figsize=(12,6), show=True)
