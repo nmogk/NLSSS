@@ -76,6 +76,7 @@ def plot_taxon_occurrences_3d(
     lngs = np.array(lons)
     zvals = -np.array(ages) # inverted so recent (small Ma) are higher numbers
     distances = np.array(cladd)/max_dist if max_dist > 0 else np.zeros_like(np.array(cladd))
+    genera = set(cladd)
 
     # Prepare plotting preferences
     plotting_preferences = plotting_preferences or {}
@@ -95,11 +96,11 @@ def plot_taxon_occurrences_3d(
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.set_zlabel('Age (Ma)')
-    ax.set_title(f'Occurrences for {taxon_identifier}')
+    ax.set_title(f'Occurrences for {taxon_identifier} (n={len(lats)} of {len(occurrences)}, {len(genera)} genera)')
 
     X1,Y1 = np.meshgrid(np.linspace(-180, 180, img.shape[1]), np.linspace(-90, 90, img.shape[0]))
 
-    ax.plot_surface(X1, -Y1, np.zeros_like(X1) - maxage, rstride=29, cstride=29, facecolors=img, shade=False) # Works but is slow/looks bad
+    ax.plot_surface(X1, -Y1, np.zeros_like(X1) - maxage*1.05, rstride=29, cstride=29, facecolors=img, shade=False) # Works but is slow/looks bad
     ax.set_box_aspect((1, 1, 0.5)) 
     ax.set_aspect('equalxy')
     # ax.imshow(img, extent=[-180, 180, -90, 90], aspect='auto', origin='lower', interpolation='nearest') # Doesn't work
