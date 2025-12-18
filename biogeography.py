@@ -98,7 +98,7 @@ def plot_taxon_occurrences_3d(
     # Build the 3D scatter
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111, projection='3d')
-    sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker)
+    sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0)
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.set_zlabel('Age (Ma)')
@@ -183,7 +183,11 @@ def command_line_interface():
     parser = argparse.ArgumentParser(description='Plot occurrences of a taxon from PaleobioDB in 3D.')
     parser.add_argument('taxon', type=str, help='Taxon name or PBDB taxon_no to plot occurrences for.')
     args = parser.parse_args()
-    plot_taxon_occurrences_3d(args.taxon)
+
+    try:
+        plot_taxon_occurrences_3d(args.taxon)
+    except ValueError as e:
+        print(f"Error: {'\n'.join(e.args)}")
 
 if __name__ == "__main__":
     # Example usage
