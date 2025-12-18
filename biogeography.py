@@ -41,12 +41,18 @@ def plot_taxon_occurrences_3d(
     max_dist = 0
     for occ in occurrences:
         # Skip records with missing required fields
-        if rv.LAT not in occ or rv.LON not in occ or rv.MIN_MA not in occ or rv.MAX_MA not in occ or rv.TAXON_ID not in occ or rv.GENUS not in occ:
+        if rv.LAT not in occ or rv.LON not in occ or (rv.MIN_MA not in occ and rv.MAX_MA not in occ):# or rv.TAXON_ID not in occ:
             continue
 
-        max_ma = occ[rv.MAX_MA]
-        min_ma = occ[rv.MIN_MA]
-        age = (min_ma + max_ma)/2
+        bothAges = rv.MIN_MA in occ and rv.MAX_MA in occ
+
+        if bothAges:
+            max_ma = occ[rv.MAX_MA]
+            min_ma = occ[rv.MIN_MA]
+            age = (min_ma + max_ma)/2
+        else:
+            age = occ[rv.MIN_MA] if rv.MIN_MA in occ else occ[rv.MAX_MA]
+        
         if age > maxage:
             maxage = age
                 
@@ -65,7 +71,7 @@ def plot_taxon_occurrences_3d(
         ages.append(age)
         # cladd.append(cladogram_distances[occ[rv.TAXON_ID]])
         
-        newhash = hash(occ[rv.GENUS]) % 100 # Dummy distance based on hash of genus name
+        newhash = hash(occ[rv.GENUS] if rv.GENUS in occ else 'unknown') % 100 # Dummy distance based on hash of genus name
 
         cladd.append(newhash)  
         if newhash > max_dist:
@@ -96,7 +102,7 @@ def plot_taxon_occurrences_3d(
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.set_zlabel('Age (Ma)')
-    ax.set_title(f'Occurrences for {taxon_identifier} (n={len(lats)} of {len(occurrences)}, {len(genera)} genera)')
+    ax.set_title(f'Occurrences for {taxon_identifier} (n={len(lats)} of {len(occurrences)}, {len(genera)} {"genera" if len(genera)!=1 else "genus"})')
 
     X1,Y1 = np.meshgrid(np.linspace(-180, 180, img.shape[1]), np.linspace(-90, 90, img.shape[0]))
 
