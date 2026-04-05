@@ -104,7 +104,7 @@ def plot_taxon_occurrences_3d(
     ax.set_zlabel('Age (Ma)')
     ax.set_title(f'Occurrences for {taxon_identifier} (n={len(lats)} of {len(occurrences)}, {len(genera)} {"genera" if len(genera)!=1 else "genus"})')
 
-    X1,Y1 = np.meshgrid(np.linspace(-180, 180, img.shape[1]), np.linspace(-90, 90, img.shape[0]))
+    X1,Y1 = np.meshgrid(np.linspace(-180, 180, img.shape[1]+1), np.linspace(-90, 90, img.shape[0]+1))
 
     ax.plot_surface(X1, -Y1, np.zeros_like(X1) - maxage*1.05, rstride=29, cstride=29, facecolors=img, shade=False) # Works but is slow/looks bad
     ax.set_box_aspect((1, 1, 0.5)) 
