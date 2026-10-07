@@ -114,16 +114,17 @@ def plot_taxon_occurrences_3d(
 
     # Build the 3D scatter
     fig = plt.figure(figsize=figsize)
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection='3d', computed_zorder=False)
+    ax.set_proj_type('ortho')
 
     if legend:
         for name, dist in genera_names.items():
             filter = np.array(cladd) == dist
             cdist = dist/max_dist if max_dist > 0 else 0
-            ax.scatter(lngs[filter], lats[filter], zvals[filter], color=cmap(cdist), label=name, s=ms, marker=marker, alpha=alpha)
+            ax.scatter(lngs[filter], lats[filter], zvals[filter], color=cmap(cdist), label=name, s=ms, marker=marker, alpha=alpha, zorder=10)
         ax.legend(title='Genera', loc='upper left', bbox_to_anchor=(1.05, 1))
     else:
-        sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0)
+        sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0, zorder=10)
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.set_zlabel('Age (Ma)')
@@ -133,7 +134,7 @@ def plot_taxon_occurrences_3d(
         X1, -Y1, np.full_like(X1, -maxage * 1.05),
         facecolors=img,
         rstride=1, cstride=1,
-        shade=False, antialiased=False, linewidth=0,
+        shade=False, antialiased=False, linewidth=0, zorder=0
     )
 
     ax.set_box_aspect((1, 1, 0.5)) 
@@ -211,7 +212,7 @@ def command_line_interface():
 
     parser = argparse.ArgumentParser(description='Plot occurrences of a taxon from PaleobioDB in 3D.')
     parser.add_argument('taxon', type=str, help='Taxon name or PBDB taxon_no to plot occurrences for.')
-    parser.add_argument('--legend', action='store_true', help='Include legend in the plot.')
+    parser.add_argument('-l', '--legend', action='store_true', help='Include legend in the plot.')
     args = parser.parse_args()
 
     try:
