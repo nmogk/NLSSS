@@ -17,6 +17,7 @@ def plot_taxon_occurrences_3d(
     coordinate_filters: Dict[str, Any] = None,
     plotting_preferences: Dict[str, Any] = None,
     time_range: List[float] = None,
+    legend: bool = True
 ) -> None:
     """
     Parameters:
@@ -98,24 +99,43 @@ def plot_taxon_occurrences_3d(
 
     img = mpimg.imread('plate_carree.png')
 
+    # Keep about as many map cells as the existing stride=29 renders.
+    rows = max(2, int(np.ceil(img.shape[0] / 29)))
+    cols = max(2, int(np.ceil(img.shape[1] / 29)))
+    row_idx = np.linspace(0, img.shape[0] - 1, rows).astype(int)
+    col_idx = np.linspace(0, img.shape[1] - 1, cols).astype(int)
+    img = img[np.ix_(row_idx, col_idx)]
+
+    X1, Y1 = np.meshgrid(
+        np.linspace(-180, 180, img.shape[1] + 1),
+        np.linspace(-90, 90, img.shape[0] + 1),
+    )
+
+
     # Build the 3D scatter
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111, projection='3d')
-    for name, dist in genera_names.items():
-        filter = np.array(cladd) == dist
-        cdist = dist/max_dist if max_dist > 0 else 0
-        ax.scatter(lngs[filter], lats[filter], zvals[filter], c=cmap(cdist), label=name, s=ms, marker=marker, alpha=alpha)
 
-    # sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0)
+    if legend:
+        for name, dist in genera_names.items():
+            filter = np.array(cladd) == dist
+            cdist = dist/max_dist if max_dist > 0 else 0
+            ax.scatter(lngs[filter], lats[filter], zvals[filter], c=cmap(cdist), label=name, s=ms, marker=marker, alpha=alpha)
+        ax.legend(title='Genera', loc='upper left', bbox_to_anchor=(1.05, 1))
+    else:
+        sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0)
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.set_zlabel('Age (Ma)')
-    ax.legend(title='Genera', loc='upper left', bbox_to_anchor=(1.05, 1))
     ax.set_title(f'Occurrences for {taxon_identifier} (n={len(lats)} of {len(occurrences)}, {len(genera)} {"genera" if len(genera)!=1 else "genus"})')
 
-    X1,Y1 = np.meshgrid(np.linspace(-180, 180, img.shape[1]+1), np.linspace(-90, 90, img.shape[0]+1))
+    ax.plot_surface(
+        X1, -Y1, np.full_like(X1, -maxage * 1.05),
+        facecolors=img,
+        rstride=1, cstride=1,
+        shade=False, antialiased=False, linewidth=0,
+    )
 
-    ax.plot_surface(X1, -Y1, np.zeros_like(X1) - maxage*1.05, rstride=29, cstride=29, facecolors=img, shade=False) # Works but is slow/looks bad
     ax.set_box_aspect((1, 1, 0.5)) 
     ax.set_aspect('equalxy')
     # ax.imshow(img, extent=[-180, 180, -90, 90], aspect='auto', origin='lower', interpolation='nearest') # Doesn't work
@@ -191,10 +211,11 @@ def command_line_interface():
 
     parser = argparse.ArgumentParser(description='Plot occurrences of a taxon from PaleobioDB in 3D.')
     parser.add_argument('taxon', type=str, help='Taxon name or PBDB taxon_no to plot occurrences for.')
+    parser.add_argument('--legend', action='store_true', help='Include legend in the plot.')
     args = parser.parse_args()
 
     try:
-        plot_taxon_occurrences_3d(args.taxon)
+        plot_taxon_occurrences_3d(args.taxon, legend=args.legend)
     except ValueError as e:
         print(f"Error: " + '\n'.join(e.args))
 
