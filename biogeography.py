@@ -90,7 +90,7 @@ def plot_taxon_occurrences_3d(
 
     # Prepare plotting preferences
     plotting_preferences = plotting_preferences or {}
-    cmap = cm.get_cmap(plotting_preferences.get('cmap', 'gist_rainbow'))
+    cmap = plt.get_cmap(plotting_preferences.get('cmap', 'gist_rainbow'))
     marker = plotting_preferences.get('marker', 'o')
     ms = plotting_preferences.get('markersize', 8)
     alpha = plotting_preferences.get('alpha', 0.8)
@@ -120,7 +120,7 @@ def plot_taxon_occurrences_3d(
         for name, dist in genera_names.items():
             filter = np.array(cladd) == dist
             cdist = dist/max_dist if max_dist > 0 else 0
-            ax.scatter(lngs[filter], lats[filter], zvals[filter], c=cmap(cdist), label=name, s=ms, marker=marker, alpha=alpha)
+            ax.scatter(lngs[filter], lats[filter], zvals[filter], color=cmap(cdist), label=name, s=ms, marker=marker, alpha=alpha)
         ax.legend(title='Genera', loc='upper left', bbox_to_anchor=(1.05, 1))
     else:
         sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0)
