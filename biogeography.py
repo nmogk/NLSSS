@@ -36,6 +36,7 @@ def plot_taxon_occurrences_3d(
 
     # Extract required fields and filter coordinates
     lats, lons, ages, cladd = ([] for i in range(4))
+    genera_names = {}
 
     maxage= 0.0
     max_dist = 0
@@ -70,8 +71,10 @@ def plot_taxon_occurrences_3d(
         lons.append(float(occ[rv.LON]))
         ages.append(age)
         # cladd.append(cladogram_distances[occ[rv.TAXON_ID]])
-        
-        newhash = hash(occ[rv.GENUS] if rv.GENUS in occ else 'unknown') % 100 # Dummy distance based on hash of genus name
+
+        genusname = occ[rv.GENUS] if rv.GENUS in occ else 'unknown'
+        newhash = hash(genusname) % 10000 # Dummy distance based on hash of genus name
+        genera_names[genusname] = newhash
 
         cladd.append(newhash)  
         if newhash > max_dist:
@@ -86,7 +89,7 @@ def plot_taxon_occurrences_3d(
 
     # Prepare plotting preferences
     plotting_preferences = plotting_preferences or {}
-    cmap = plotting_preferences.get('cmap', 'gist_rainbow')
+    cmap = cm.get_cmap(plotting_preferences.get('cmap', 'gist_rainbow'))
     marker = plotting_preferences.get('marker', 'o')
     ms = plotting_preferences.get('markersize', 8)
     alpha = plotting_preferences.get('alpha', 0.8)
@@ -98,10 +101,16 @@ def plot_taxon_occurrences_3d(
     # Build the 3D scatter
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111, projection='3d')
-    sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0)
+    for name, dist in genera_names.items():
+        filter = np.array(cladd) == dist
+        cdist = dist/max_dist if max_dist > 0 else 0
+        ax.scatter(lngs[filter], lats[filter], zvals[filter], c=cmap(cdist), label=name, s=ms, marker=marker, alpha=alpha)
+
+    # sc = ax.scatter(lngs, lats, zvals, c=distances, cmap=cmap, s=ms, marker=marker, alpha=1.0)
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.set_zlabel('Age (Ma)')
+    ax.legend(title='Genera', loc='upper left', bbox_to_anchor=(1.05, 1))
     ax.set_title(f'Occurrences for {taxon_identifier} (n={len(lats)} of {len(occurrences)}, {len(genera)} {"genera" if len(genera)!=1 else "genus"})')
 
     X1,Y1 = np.meshgrid(np.linspace(-180, 180, img.shape[1]+1), np.linspace(-90, 90, img.shape[0]+1))
@@ -187,7 +196,7 @@ def command_line_interface():
     try:
         plot_taxon_occurrences_3d(args.taxon)
     except ValueError as e:
-        print(f"Error: {'\n'.join(e.args)}")
+        print(f"Error: " + '\n'.join(e.args))
 
 if __name__ == "__main__":
     # Example usage
